@@ -1,0 +1,109 @@
+{
+  "name": "claude-code-desktop",
+  "version": "0.1.0",
+  "description": "Desktop GUI wrapping the Claude Code CLI",
+  "main": "out/main/index.js",
+  "author": "",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "clean:mac-output": "node -e \"const { rmSync } = require('node:fs'); for (const path of ['dist/mac-arm64', 'dist/mac']) rmSync(path, { recursive: true, force: true })\"",
+    "package:mac": "npm run build && npm run clean:mac-output && electron-builder --mac",
+    "package:win": "npm run build && electron-builder --win",
+    "package:linux": "npm run build && electron-builder --linux",
+    "package:all": "npm run build && electron-builder --mac --win --linux",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "highlight.js": "11.11.1",
+    "lucide-react": "^0.468.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-markdown": "10.1.0",
+    "rehype-highlight": "7.0.2",
+    "uuid": "11.1.0",
+    "zustand": "5.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.29",
+    "@types/react": "19.1.6",
+    "@types/react-dom": "19.1.6",
+    "@types/uuid": "10.0.0",
+    "@vitejs/plugin-react": "4.4.1",
+    "electron": "36.4.0",
+    "electron-builder": "^26.15.7",
+    "electron-vite": "3.1.0",
+    "typescript": "5.8.3",
+    "vite": "6.3.5",
+    "vitest": "^3.2.4"
+  },
+  "build": {
+    "appId": "com.claudecode.desktop",
+    "productName": "Claude Code Desktop",
+    "icon": "resources/app-icon.png",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*"
+    ],
+    "mac": {
+      "icon": "resources/app-icon.icns",
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "resources/app-icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "resources/icons",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

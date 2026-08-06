@@ -1,0 +1,32 @@
+# 依赖
+node_modules/
+
+# 构建产物
+out/
+dist/
+
+# electron-builder 打包输出
+release/
+
+# 开发工具
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.user
+
+# TypeScript 缓存
+*.tsbuildinfo
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# openspec
+.codex/
+.claude/

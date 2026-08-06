@@ -1,0 +1,7 @@
+schema: spec-driven
+created: 2026-08-04
+context: |
+  Output language: Simplified Chinese.
+  All artifacts including tasks.md task list, section headings, task items, descriptions must be written in Simplified Chinese.
+  Do NOT use English for task titles and checklist items.
+  Only code identifiers, API paths retain English.
