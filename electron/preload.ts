@@ -111,6 +111,12 @@ const api = {
   revealProjectDirectory: (id: string): Promise<void> =>
     ipcRenderer.invoke('sessions:reveal-project-directory', id),
 
+  openPath: (filePath: string): Promise<void> =>
+    ipcRenderer.invoke('shell:open-path', filePath),
+
+  pathExists: (filePath: string): Promise<boolean> =>
+    ipcRenderer.invoke('shell:path-exists', filePath),
+
   updateSession: (
     id: string,
     patch: Partial<Pick<Session, 'title' | 'model' | 'permissionMode' | 'updatedAt'>>

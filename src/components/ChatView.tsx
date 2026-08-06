@@ -6,6 +6,7 @@ import Composer from './Composer'
 import ModelPicker from './ModelPicker'
 import PermissionPicker from './PermissionPicker'
 import TranscriptView from './TranscriptView'
+import { useThrottledStream } from './useThrottledStream'
 import {
   transcriptFromLegacyMessages,
   type Message,
@@ -73,10 +74,12 @@ export function isNearChatBottom(scrollHeight: number, scrollTop: number, client
 export function getTranscriptOutputSignature(
   transcript: Transcript,
   streamingText: string,
-  liveStatus: TranscriptNotice | null
+  liveStatus: TranscriptNotice | null,
+  streamingThinking = '',
+  streamingThinkingTokens: number | null = null
 ): string {
   const outputEntries = transcript.entries.filter((entry) => entry.type !== 'user')
-  return JSON.stringify({ outputEntries, streamingText, liveStatus })
+  return JSON.stringify({ outputEntries, streamingText, streamingThinking, streamingThinkingTokens, liveStatus })
 }
 
 export function nextUnseenOutputCount(
@@ -94,6 +97,9 @@ export default function ChatView({ sessionId }: Props) {
   const isGenerating = useAppStore((s) => s.isGenerating)
   const generatingSessionId = useAppStore((s) => s.generatingSessionId)
   const streamingText = useAppStore((s) => s.streamingText)
+  const streamingThinking = useAppStore((s) => s.streamingThinking)
+  const streamingThinkingTokens = useAppStore((s) => s.streamingThinkingTokens)
+  const streamingPhase = useAppStore((s) => s.streamingPhase)
   const liveStatus = useAppStore((s) => s.liveStatus)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const sessions = useAppStore((s) => s.sessions)
@@ -112,7 +118,11 @@ export default function ChatView({ sessionId }: Props) {
   const session = sessions.find((item) => item.id === sessionId)
   const isActiveSession = activeSessionId === sessionId
   const isGeneratingSession = isGenerating && generatingSessionId === sessionId
-  const visibleStreamingText = isGeneratingSession ? streamingText : ''
+  // 节流后的流式值同时驱动输出签名与渲染，保证「未读输出」计数不与显示错位。
+  const visibleStreamingText = useThrottledStream(isGeneratingSession ? streamingText : '')
+  const visibleStreamingThinking = useThrottledStream(isGeneratingSession ? streamingThinking : '')
+  const visibleStreamingThinkingTokens = isGeneratingSession ? streamingThinkingTokens : null
+  const visibleStreamingPhase = isGeneratingSession ? streamingPhase : null
   const visibleLiveStatus = isGeneratingSession ? liveStatus : null
   const visibleTranscript = useMemo(
     () => transcript ?? transcriptFromLegacyMessages(messages),
@@ -124,8 +134,14 @@ export default function ChatView({ sessionId }: Props) {
   const translatedStarterPrompts = getStarterPrompts(locale)
 
   const outputSignature = useMemo(() => {
-    return getTranscriptOutputSignature(visibleTranscript, visibleStreamingText, visibleLiveStatus)
-  }, [visibleLiveStatus, visibleStreamingText, visibleTranscript])
+    return getTranscriptOutputSignature(
+      visibleTranscript,
+      visibleStreamingText,
+      visibleLiveStatus,
+      visibleStreamingThinking,
+      visibleStreamingThinkingTokens
+    )
+  }, [visibleLiveStatus, visibleStreamingText, visibleStreamingThinking, visibleStreamingThinkingTokens, visibleTranscript])
 
   const scrollToLatest = (behavior: ScrollBehavior = 'smooth') => {
     const container = scrollRef.current
@@ -248,8 +264,12 @@ export default function ChatView({ sessionId }: Props) {
             <TranscriptView
               transcript={visibleTranscript}
               streamingText={visibleStreamingText}
+              streamingThinking={visibleStreamingThinking}
+              streamingThinkingTokens={visibleStreamingThinkingTokens}
+              streamingPhase={visibleStreamingPhase}
               isGenerating={isGeneratingSession}
               liveStatus={visibleLiveStatus}
+              projectPath={projectPath}
             />
           )}
         </div>

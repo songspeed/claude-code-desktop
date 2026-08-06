@@ -377,6 +377,23 @@ ipcMain.handle('sessions:reveal-project-directory', async (_event, id: string): 
   if (failure) throw new Error(`无法在系统文件管理器中打开项目目录：${failure}`)
 })
 
+/** shell:open-path → void：按绝对路径用系统默认应用打开文件。 */
+ipcMain.handle('shell:open-path', async (_event, filePath: string): Promise<void> => {
+  if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('无效的文件路径。')
+  const failure = await shell.openPath(filePath)
+  if (failure) throw new Error(`无法打开文件：${failure}`)
+})
+
+/** shell:path-exists → boolean：渲染层校验 file:line 引用指向的文件是否存在。 */
+ipcMain.handle('shell:path-exists', async (_event, filePath: string): Promise<boolean> => {
+  if (typeof filePath !== 'string' || !filePath.trim()) return false
+  try {
+    return existsSync(filePath)
+  } catch {
+    return false
+  }
+})
+
 /** skills:list → InstalledSkill[] */
 ipcMain.handle('skills:list', (_event, sessionId: string | null) => {
   const projectPath = sessionId ? getSessionData(sessionId)?.session.projectPath ?? null : null
