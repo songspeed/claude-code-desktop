@@ -92,4 +92,19 @@ describe('ChatView empty-session suggestions', () => {
     expect(nextUnseenOutputCount(2, true, true)).toBe(0)
     expect(nextUnseenOutputCount(2, false, false)).toBe(0)
   })
+
+  it('includes live thinking and the estimated token count in the output signature', () => {
+    const transcript: Transcript = {
+      version: 2,
+      entries: [{ id: 'user-1', turnId: 'turn-1', sequence: 0, createdAt: 0, type: 'user', text: 'Go' }],
+    }
+
+    const base = getTranscriptOutputSignature(transcript, '', null)
+    expect(getTranscriptOutputSignature(transcript, '', null, '思考中')).not.toBe(base)
+    expect(getTranscriptOutputSignature(transcript, '', null, '', 1250)).not.toBe(base)
+    expect(getTranscriptOutputSignature(transcript, '', null, '', 1250))
+      .toBe(getTranscriptOutputSignature(transcript, '', null, '', 1250))
+    expect(getTranscriptOutputSignature(transcript, '', null, '', null))
+      .toBe(getTranscriptOutputSignature(transcript, '', null, '', undefined))
+  })
 })

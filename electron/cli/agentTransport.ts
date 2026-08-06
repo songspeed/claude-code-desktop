@@ -35,10 +35,28 @@ export const CLAUDE_STREAM_JSON_CAPABILITIES = {
   'system-notices': true,
 } as const satisfies Record<AgentCapability, boolean>
 
+/** 回合结束后 CLI 报告的 token 用量、成本、耗时与模型（参考 opencode 的消息元数据展示）。 */
+export interface TokenUsage {
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  /** CLI 端到端耗时（毫秒） */
+  durationMs?: number
+  /** 回合成本（美元），CLI total_cost_usd 优先、modelUsage 回退求和 */
+  costUsd?: number
+  /** 回合主导模型名（modelUsage 的首个 key） */
+  model?: string
+}
+
 /** 推向渲染层的内部事件类型。 */
 export type AgentEvent =
   | { type: 'session_init'; sessionId: string }       // init：提前拿到 CLI session_id（runner 内部消费）
   | { type: 'text_delta'; delta: string }            // 增量文本
+  | { type: 'thinking_delta'; delta: string }        // 增量思考过程（流式折叠显示）
+  | { type: 'thinking_count'; estimatedTokens: number } // 思考流式期间的估算 token 绝对值
+  | { type: 'phase_update'; phase: string }          // CLI 实时阶段信号（reading workspace 等）
+  | { type: 'usage'; usage: TokenUsage }             // 回合结束的 token 用量
   | { type: 'activity_started'; activityId: string; toolName: string; input: string }
   | { type: 'activity_result'; activityId: string; output?: string; isError?: boolean }
   | { type: 'status'; notice: TranscriptNotice }

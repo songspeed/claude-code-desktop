@@ -23,7 +23,7 @@ export function runReadonlyClaudeCommand(
       cwd,
       env: { ...process.env, PATH: resolved.spawnPath },
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
+      shell: resolved.shell ?? false,
     })
     let output = ''
     let truncated = false

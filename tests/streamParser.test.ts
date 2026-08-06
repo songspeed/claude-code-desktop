@@ -18,7 +18,7 @@ vi.mock('../electron/cli/pathHelper', () => ({
 }))
 
 import { ClaudeRunner } from '../electron/cli/claudeRunner'
-import { parseLine, splitLines } from '../electron/cli/streamParser'
+import { parseLine, splitLines, stripAnsi } from '../electron/cli/streamParser'
 import { CLAUDE_STREAM_JSON_CAPABILITIES, type AgentEvent } from '../electron/cli/agentTransport'
 
 describe('stream-json parser', () => {
@@ -67,8 +67,17 @@ describe('stream-json parser', () => {
     }))).toEqual([{
       type: 'activity_result', activityId: 'tooluse-read', output: 'file contents', isError: false,
     }])
-    expect(parseLine(JSON.stringify({ type: 'system', subtype: 'status', status: 'requesting' }))).toEqual([])
     expect(parseLine(JSON.stringify({ type: 'system', subtype: 'compact_boundary' }))).toEqual([])
+  })
+
+  it('converts system/status value into phase_update and ignores non-string values', () => {
+    expect(parseLine(JSON.stringify({ type: 'system', subtype: 'status', value: 'reading workspace' }))).toEqual([
+      { type: 'phase_update', phase: 'reading workspace' },
+    ])
+    // 旧形态 status 字段与数值型 value 均不产生阶段事件
+    expect(parseLine(JSON.stringify({ type: 'system', subtype: 'status', status: 'requesting' }))).toEqual([])
+    expect(parseLine(JSON.stringify({ type: 'system', subtype: 'status', value: 42 }))).toEqual([])
+    expect(parseLine(JSON.stringify({ type: 'system', subtype: 'status', value: '' }))).toEqual([])
   })
 
   it('keeps a sanitized Claude Code 2.1.222 stream-json sample as the parser fixture', () => {
@@ -77,6 +86,7 @@ describe('stream-json parser', () => {
 
     expect(events).toEqual(expect.arrayContaining([
       { type: 'session_init', sessionId: 'session-fixture' },
+      { type: 'thinking_count', estimatedTokens: 312 },
       { type: 'text_delta', delta: 'Inspecting the project.' },
       {
         type: 'activity_started',
@@ -107,11 +117,11 @@ describe('stream-json parser', () => {
     }))).toEqual([{ type: 'text_delta', delta: '你好' }])
   })
 
-  it('ignores thinking_delta and non-text stream events', () => {
+  it('parses thinking_delta increments and ignores non-text stream events', () => {
     expect(parseLine(JSON.stringify({
       type: 'stream_event',
-      event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'x' } },
-    }))).toEqual([])
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '思考' } },
+    }))).toEqual([{ type: 'thinking_delta', delta: '思考' }])
     expect(parseLine(JSON.stringify({
       type: 'stream_event',
       event: { type: 'message_stop' },
@@ -127,13 +137,88 @@ describe('stream-json parser', () => {
     }))).toEqual([{ type: 'session_init', sessionId: 'init-sid' }])
   })
 
-  it('ignores thinking_tokens flood and unknown types', () => {
+  it('converts thinking_tokens into thinking_count and ignores unknown types', () => {
     expect(parseLine(JSON.stringify({
       type: 'system', subtype: 'thinking_tokens', estimated_tokens: 42,
+    }))).toEqual([{ type: 'thinking_count', estimatedTokens: 42 }])
+    // 高频绝对值：第二次估算覆盖前值，不做累加
+    expect(parseLine(JSON.stringify({
+      type: 'system', subtype: 'thinking_tokens', estimated_tokens: 1250,
+    }))).toEqual([{ type: 'thinking_count', estimatedTokens: 1250 }])
+    expect(parseLine(JSON.stringify({
+      type: 'system', subtype: 'thinking_tokens', estimated_tokens: 'nope',
     }))).toEqual([])
     expect(parseLine(JSON.stringify({ type: 'user', message: {} }))).toEqual([])
     expect(parseLine('not json at all')).toEqual([])
     expect(parseLine('')).toEqual([])
+  })
+
+  it('maps result cost and model with total_cost_usd taking priority', () => {
+    expect(parseLine(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      session_id: 'session-1',
+      duration_ms: 5931,
+      total_cost_usd: 0.146481,
+      modelUsage: {
+        'deepseek-v4-pro': { inputTokens: 23390, outputTokens: 275, costUSD: 0.146481 },
+      },
+      usage: {
+        input_tokens: 22956,
+        output_tokens: 231,
+        cache_read_input_tokens: 45312,
+        cache_creation_input_tokens: 0,
+      },
+    }))).toEqual([
+      { type: 'usage', usage: {
+        inputTokens: 22956,
+        outputTokens: 231,
+        cacheReadTokens: 45312,
+        cacheWriteTokens: 0,
+        durationMs: 5931,
+        costUsd: 0.146481,
+        model: 'deepseek-v4-pro',
+      } },
+      { type: 'done', sessionId: 'session-1' },
+    ])
+  })
+
+  it('falls back to summing modelUsage cost when total_cost_usd is absent', () => {
+    expect(parseLine(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      session_id: 'session-1',
+      modelUsage: {
+        'claude-sonnet-4-5': { costUSD: 0.01 },
+        'claude-opus-4-1': { costUSD: 0.02 },
+      },
+    }))).toEqual([
+      { type: 'usage', usage: { costUsd: 0.03, model: 'claude-sonnet-4-5' } },
+      { type: 'done', sessionId: 'session-1' },
+    ])
+  })
+
+  it('emits permission-denied notices for each denied request', () => {
+    expect(parseLine(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      session_id: 'session-1',
+      permission_denials: [
+        { tool_name: 'Write', message: 'Claude requested permissions to write to demo.txt, but you have not granted them yet.' },
+        { tool_name: 'Bash' },
+      ],
+    }))).toEqual([
+      { type: 'status', notice: { kind: 'permission_denied', toolName: 'Write', detail: 'Claude requested permissions to write to demo.txt, but you have not granted them yet.' } },
+      { type: 'status', notice: { kind: 'permission_denied', toolName: 'Bash' } },
+      { type: 'done', sessionId: 'session-1' },
+    ])
+    // 空数组不产生通知
+    expect(parseLine(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      session_id: 'session-1',
+      permission_denials: [],
+    }))).toEqual([{ type: 'done', sessionId: 'session-1' }])
   })
 
   it('returns an error event for a CLI result failure', () => {
@@ -143,6 +228,39 @@ describe('stream-json parser', () => {
       result: 'Service unavailable',
       session_id: 'session-1',
     }))).toEqual([{ type: 'error', message: 'Service unavailable', errorSubtype: undefined }])
+  })
+
+  it('emits usage before done when the result carries token counts and duration', () => {
+    expect(parseLine(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      session_id: 'session-1',
+      duration_ms: 2940,
+      usage: {
+        input_tokens: 22827,
+        output_tokens: 23,
+        cache_read_input_tokens: 1200,
+        cache_creation_input_tokens: 0,
+      },
+    }))).toEqual([
+      { type: 'usage', usage: {
+        inputTokens: 22827,
+        outputTokens: 23,
+        cacheReadTokens: 1200,
+        cacheWriteTokens: 0,
+        durationMs: 2940,
+      } },
+      { type: 'done', sessionId: 'session-1' },
+    ])
+  })
+
+  it('omits the usage event when the result has neither tokens nor duration', () => {
+    expect(parseLine(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      session_id: 'session-1',
+      usage: {},
+    }))).toEqual([{ type: 'done', sessionId: 'session-1' }])
   })
 
   it('emits an empty-message error carrying subtype when result text is missing', () => {
@@ -165,6 +283,32 @@ describe('stream-json parser', () => {
     }))).toEqual([{
       type: 'status', notice: { kind: 'retry', attempt: 3, maxRetries: 10, status: 503 },
     }])
+  })
+
+  it('strips ANSI escape sequences from tool results while keeping valid text', () => {
+    expect(parseLine(JSON.stringify({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'tooluse-bash',
+          content: '\x1b[31mError: build failed\x1b[0m',
+          is_error: true,
+        }],
+      },
+    }))).toEqual([{
+      type: 'activity_result', activityId: 'tooluse-bash', output: 'Error: build failed', isError: true,
+    }])
+
+    expect(stripAnsi('\x1b[32mok\x1b[0m')).toBe('ok')
+    expect(stripAnsi('\x1b]8;;https://example.com\x07link\x1b]8;;\x07')).toBe('link')
+    expect(stripAnsi('\x1b[1;3;4mstyled\x1b[0m')).toBe('styled')
+    // 无 ANSI 的文本原样保留
+    expect(stripAnsi('plain text 中文')).toBe('plain text 中文')
+    // 不完整的转义序列（无终止字节）安全剥离或原样保留，均不抛错
+    expect(() => stripAnsi('half \x1b[31')).not.toThrow()
+    // 空输入安全返回
+    expect(stripAnsi('')).toBe('')
   })
 
   it('splits both Unix and Windows line endings while retaining partial input', () => {

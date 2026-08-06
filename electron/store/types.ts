@@ -148,6 +148,7 @@ export type TranscriptActivityState =
   | 'running'
   | 'completed'
   | 'failed'
+  | 'permission_denied'
   | 'details_unavailable'
   | 'interrupted'
 
@@ -156,6 +157,7 @@ export type TranscriptNotice =
   | { kind: 'context_compacted' }
   | { kind: 'task_progress'; completed: number; total: number }
   | { kind: 'requesting' }
+  | { kind: 'permission_denied'; toolName?: string; detail?: string }
 
 export interface TranscriptDetails {
   input?: string
@@ -202,6 +204,21 @@ export interface TranscriptTerminalEntry extends TranscriptEntryBase {
   outcome: 'completed' | 'error' | 'interrupted'
   errorMessage?: string
   partialMarkdown?: string
+  /** 回合结束的 token 用量与耗时（CLI result.usage） */
+  usage?: TokenUsage
+}
+
+export interface TokenUsage {
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  /** CLI 端到端耗时（毫秒） */
+  durationMs?: number
+  /** 回合成本（美元），CLI total_cost_usd 优先、modelUsage 回退求和 */
+  costUsd?: number
+  /** 回合主导模型名（modelUsage 的首个 key） */
+  model?: string
 }
 
 export type TranscriptEntry =

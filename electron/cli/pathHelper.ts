@@ -8,8 +8,8 @@
  */
 
 import { execSync, spawnSync } from 'child_process'
-import { existsSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readFileSync } from 'fs'
+import { dirname, join } from 'path'
 
 /** 从登录 shell 获取完整的 PATH 环境变量（macOS / Linux） */
 function getLoginShellPath(): string | undefined {
@@ -73,6 +73,46 @@ export interface ResolvedExecutable {
   execPath: string
   /** 用于 spawn 的 PATH 环境变量（已合并登录 shell PATH） */
   spawnPath: string
+  /**
+   * 仅当 Windows 上脚本无法解析为原生二进制时置 true，
+   * 表示 spawn 需经 cmd.exe（shell: true）执行。
+   */
+  shell?: boolean
+}
+
+/**
+ * 解析 npm 包装脚本（claude.cmd / claude.sh）背后的真实可执行文件。
+ * Windows 的 Node 无法直接 spawn .cmd/.bat（EINVAL），且经 cmd 执行
+ * 存在参数注入风险，因此优先定位 npm 标准布局中的 claude.exe。
+ */
+function resolveNativeExecutable(scriptPath: string): string | null {
+  const dir = dirname(scriptPath)
+  const candidates = [
+    join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+    join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude'),
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  // 兼容非标准安装布局：从脚本内容提取目标路径
+  try {
+    const content = readFileSync(scriptPath, 'utf8')
+    const match = content.match(/["'`](?:%~?dp0|%dp0|"?\$basedir\/|"\$basedir\/)%?[\\/]([^"'`]+\.(?:exe|js))["'`]/)
+    if (match) {
+      const target = join(dir, match[1])
+      if (existsSync(target)) return target
+    }
+  } catch {
+    // 忽略脚本读取失败
+  }
+  return null
+}
+
+function toResolvedExecutable(scriptPath: string, spawnPath: string): ResolvedExecutable {
+  const native = resolveNativeExecutable(scriptPath)
+  if (native) return { execPath: native, spawnPath }
+  const needsShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(scriptPath)
+  return { execPath: scriptPath, spawnPath, shell: needsShell || undefined }
 }
 
 /** 探测 claude 可执行文件，返回绝对路径和用于 spawn 的 PATH */
@@ -80,7 +120,7 @@ export function resolveClaudeExecutable(): ResolvedExecutable | null {
   // 1. 先用合并了登录 shell PATH 的路径搜索
   const mergedPath = buildMergedPath()
   const found = findInPath(mergedPath)
-  if (found) return { execPath: found, spawnPath: mergedPath }
+  if (found) return toResolvedExecutable(found, mergedPath)
 
   // 2. 常见兜底路径（macOS homebrew / 系统路径）
   const fallbackPaths =
@@ -99,7 +139,7 @@ export function resolveClaudeExecutable(): ResolvedExecutable | null {
 
   for (const p of fallbackPaths) {
     if (existsSync(p)) {
-      return { execPath: p, spawnPath: mergedPath }
+      return toResolvedExecutable(p, mergedPath)
     }
   }
 
@@ -113,10 +153,13 @@ export function checkClaudeAvailability(execPath: string, spawnPath: string): {
   error?: string
 } {
   try {
+    // Windows 下 .cmd/.bat 无法被 spawnSync 直接执行，需经 cmd.exe
+    const needsShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(execPath)
     const result = spawnSync(execPath, ['--version'], {
       encoding: 'utf8',
       timeout: 5000,
       env: { ...process.env, PATH: spawnPath },
+      shell: needsShell,
     })
     if (result.status === 0) {
       return { available: true, version: result.stdout.trim() }

@@ -1,4 +1,5 @@
 {"type":"system","subtype":"init","session_id":"session-fixture"}
+{"type":"system","subtype":"thinking_tokens","estimated_tokens":312}
 {"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Inspecting the project."}}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"tooluse_fixture_read","name":"Read","input":{"file_path":"/workspace/package.json"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tooluse_fixture_read","content":"{\"name\":\"desktop-app\"}"}]}}

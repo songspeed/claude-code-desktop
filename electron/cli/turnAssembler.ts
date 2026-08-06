@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 将带顺序号的 Agent 事件组装为可持久化 transcript 提交。
  * 主进程和渲染层消费同一事件包，因此条目 ID、顺序和活动生命周期保持一致。
  */
@@ -7,6 +7,7 @@ import type { AgentEventEnvelope } from './agentTransport'
 import { MAX_ACTIVITY_DETAIL_BYTES, MAX_TURN_DETAIL_BYTES, sanitizeActivityText } from './activitySafety'
 import type {
   Message,
+  TokenUsage,
   TranscriptActivityEntry,
   TranscriptActivityState,
   TranscriptEntry,
@@ -31,9 +32,19 @@ interface PendingActivity {
   details: TranscriptActivityEntry['details']
 }
 
+/** 权限拒绝模式：工具结果报错且文本命中未授权描述时标记为权限拒绝。 */
+function isPermissionDeniedOutput(output: string | undefined): boolean {
+  if (!output) return false
+  return /permission|authorized|granted|denied/i.test(output)
+}
+
 export class TurnAssembler {
   private markdown = ''
+  private thinking = ''
+  private thinkingTokens: number | undefined
+  private phase: string | undefined
   private status: TranscriptNotice | null = null
+  private usage: TokenUsage | undefined
   private detailBytes = 0
   private readonly pending = new Map<string, PendingActivity>()
 
@@ -41,6 +52,21 @@ export class TurnAssembler {
 
   get liveText(): string {
     return this.markdown
+  }
+
+  /** 流式思考过程（实时区折叠显示，不持久化）。 */
+  get liveThinking(): string {
+    return this.thinking
+  }
+
+  /** 流式思考期间的估算 token 绝对值（实时计数，不持久化）。 */
+  get liveThinkingTokens(): number | undefined {
+    return this.thinkingTokens
+  }
+
+  /** CLI 实时阶段信号（如 reading workspace，覆盖式更新，不持久化）。 */
+  get livePhase(): string | undefined {
+    return this.phase
   }
 
   get liveStatus(): TranscriptNotice | null {
@@ -54,6 +80,22 @@ export class TurnAssembler {
       case 'text_delta':
         this.markdown += event.delta
         this.status = null
+        return []
+
+      case 'thinking_delta':
+        this.thinking += event.delta
+        return []
+
+      case 'thinking_count':
+        this.thinkingTokens = event.estimatedTokens
+        return []
+
+      case 'phase_update':
+        this.phase = event.phase
+        return []
+
+      case 'usage':
+        this.usage = event.usage
         return []
 
       case 'status': {
@@ -129,7 +171,9 @@ export class TurnAssembler {
           ...(pending.details.truncated || safeOutput.truncated ? { truncated: true } : {}),
           ...(pending.details.redacted || safeOutput.redacted ? { redacted: true } : {}),
         }
-        const state: TranscriptActivityState = event.isError ? 'failed' : 'completed'
+        const state: TranscriptActivityState = event.isError
+          ? isPermissionDeniedOutput(safeOutput.text) ? 'permission_denied' : 'failed'
+          : 'completed'
         this.pending.delete(event.activityId)
         return [{
           kind: 'update',
@@ -157,6 +201,10 @@ export class TurnAssembler {
         })
         if (event.sessionId) commits.push({ kind: 'session', claudeSessionId: event.sessionId })
         this.status = null
+        this.thinking = ''
+        this.thinkingTokens = undefined
+        this.usage = undefined
+        this.phase = undefined
         return commits
       }
 
@@ -177,6 +225,10 @@ export class TurnAssembler {
           },
         })
         this.status = null
+        this.thinking = ''
+        this.thinkingTokens = undefined
+        this.usage = undefined
+        this.phase = undefined
         return commits
       }
 
@@ -196,6 +248,10 @@ export class TurnAssembler {
           },
         })
         this.status = null
+        this.thinking = ''
+        this.thinkingTokens = undefined
+        this.usage = undefined
+        this.phase = undefined
         return commits
       }
 
@@ -257,6 +313,7 @@ export class TurnAssembler {
       type: 'terminal',
       outcome,
       ...(errorMessage ? { errorMessage } : {}),
+      ...(this.usage ? { usage: this.usage } : {}),
     }
   }
 

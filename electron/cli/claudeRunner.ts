@@ -65,7 +65,7 @@ export class ClaudeRunner implements AgentTransport {
       return
     }
 
-    const { execPath, spawnPath } = resolved
+    const { execPath, spawnPath, shell } = resolved
 
     // 构造 CLI 参数数组（避免 shell 插值，防止注入）
     const args: string[] = [
@@ -121,8 +121,8 @@ export class ClaudeRunner implements AgentTransport {
         env: { ...process.env, PATH: spawnPath },
         cwd: opts.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
-        // Windows: 使用 shell:false 避免 cmd 包裹，直接调用 .cmd/.exe
-        shell: false,
+        // Windows 的 .cmd/.bat 需经 cmd.exe 执行；原生 claude.exe 则直接 spawn
+        shell: shell ?? false,
       })
 
       const proc = this.proc

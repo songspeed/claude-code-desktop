@@ -31,6 +31,131 @@ describe('TurnAssembler', () => {
     ])
   })
 
+  it('accumulates thinking deltas into liveThinking without persisting entries', () => {
+    const assembler = new TurnAssembler(turnId)
+    const commits = [
+      ...assembler.feed(envelope(1, { type: 'thinking_delta', delta: '先检查' })),
+      ...assembler.feed(envelope(2, { type: 'thinking_delta', delta: '依赖。' })),
+    ]
+    expect(commits).toEqual([])
+    expect(assembler.liveThinking).toBe('先检查依赖。')
+    assembler.feed(envelope(3, { type: 'done', sessionId: 's1' }))
+    expect(assembler.liveThinking).toBe('')
+  })
+
+  it('tracks live thinking tokens by absolute value and clears them at the turn end', () => {
+    const assembler = new TurnAssembler(turnId)
+    expect(assembler.liveThinkingTokens).toBeUndefined()
+    assembler.feed(envelope(1, { type: 'thinking_count', estimatedTokens: 42 }))
+    expect(assembler.liveThinkingTokens).toBe(42)
+    // 覆盖式更新：绝对值为 1250，不做增量累加
+    assembler.feed(envelope(2, { type: 'thinking_count', estimatedTokens: 1250 }))
+    expect(assembler.liveThinkingTokens).toBe(1250)
+    assembler.feed(envelope(3, { type: 'done', sessionId: 's1' }))
+    expect(assembler.liveThinkingTokens).toBeUndefined()
+  })
+
+  it('clears live thinking state on abort as well', () => {
+    const assembler = new TurnAssembler(turnId)
+    assembler.feed(envelope(1, { type: 'thinking_count', estimatedTokens: 88 }))
+    assembler.feed(envelope(2, { type: 'thinking_delta', delta: '正在思考' }))
+    assembler.feed(envelope(3, { type: 'aborted' }))
+    expect(assembler.liveThinkingTokens).toBeUndefined()
+    expect(assembler.liveThinking).toBe('')
+  })
+
+  it('tracks live phase by overwrite and clears it at every turn end', () => {
+    const assembler = new TurnAssembler(turnId)
+    expect(assembler.livePhase).toBeUndefined()
+    assembler.feed(envelope(1, { type: 'phase_update', phase: 'reading workspace' }))
+    expect(assembler.livePhase).toBe('reading workspace')
+    // 覆盖式更新：后续阶段替换前值
+    assembler.feed(envelope(2, { type: 'phase_update', phase: 'executing tools' }))
+    expect(assembler.livePhase).toBe('executing tools')
+    assembler.feed(envelope(3, { type: 'done', sessionId: 's1' }))
+    expect(assembler.livePhase).toBeUndefined()
+  })
+
+  it('clears live phase on error and abort as well', () => {
+    const errored = new TurnAssembler(turnId)
+    errored.feed(envelope(1, { type: 'phase_update', phase: 'creating context' }))
+    errored.feed(envelope(2, { type: 'error', message: 'boom' }))
+    expect(errored.livePhase).toBeUndefined()
+
+    const aborted = new TurnAssembler(turnId)
+    aborted.feed(envelope(1, { type: 'phase_update', phase: 'thinking' }))
+    aborted.feed(envelope(2, { type: 'aborted' }))
+    expect(aborted.livePhase).toBeUndefined()
+  })
+
+  it('marks a permission-denied tool result as permission_denied', () => {
+    const { commits } = run([
+      { type: 'activity_started', activityId: 'tooluse-denied', toolName: 'Write', input: '{"file_path":"demo.txt"}' },
+      {
+        type: 'activity_result',
+        activityId: 'tooluse-denied',
+        output: 'Claude requested permissions to write to demo.txt, but you have not granted them yet.',
+        isError: true,
+      },
+      { type: 'done', sessionId: 's1' },
+    ])
+
+    expect(commits).toContainEqual(expect.objectContaining({
+      kind: 'update', entryId: 'turn-1:activity:tooluse-denied', patch: expect.objectContaining({ state: 'permission_denied' }),
+    }))
+  })
+
+  it('keeps failed state for errors that are not about permissions', () => {
+    const { commits } = run([
+      { type: 'activity_started', activityId: 'tooluse-crash', toolName: 'Bash', input: '{}' },
+      { type: 'activity_result', activityId: 'tooluse-crash', output: 'exit code 1', isError: true },
+      { type: 'done', sessionId: 's1' },
+    ])
+
+    expect(commits).toContainEqual(expect.objectContaining({
+      kind: 'update', entryId: 'turn-1:activity:tooluse-crash', patch: expect.objectContaining({ state: 'failed' }),
+    }))
+  })
+
+  it('persists turn-level permission-denied notices through the notice flow', () => {
+    const { commits } = run([
+      { type: 'status', notice: { kind: 'permission_denied', toolName: 'Write' } },
+      { type: 'done', sessionId: 's1' },
+    ])
+
+    expect(commits).toContainEqual(expect.objectContaining({
+      kind: 'append', entry: expect.objectContaining({
+        type: 'notice', notice: { kind: 'permission_denied', toolName: 'Write' },
+      }),
+    }))
+  })
+
+  it('attaches the CLI usage to the completed terminal entry', () => {
+    const { commits } = run([
+      { type: 'text_delta', delta: 'done' },
+      {
+        type: 'usage',
+        usage: {
+          inputTokens: 22827, outputTokens: 23, cacheReadTokens: 1200, durationMs: 2940,
+          costUsd: 0.146481, model: 'deepseek-v4-pro',
+        },
+      },
+      { type: 'done', sessionId: 's1' },
+    ])
+
+    expect(commits).toContainEqual(expect.objectContaining({
+      kind: 'append',
+      entry: expect.objectContaining({
+        type: 'terminal',
+        outcome: 'completed',
+        usage: {
+          inputTokens: 22827, outputTokens: 23, cacheReadTokens: 1200, durationMs: 2940,
+          costUsd: 0.146481, model: 'deepseek-v4-pro',
+        },
+      }),
+    }))
+  })
+
   it('keeps text, linked activity updates, and later text in their actual order', () => {
     const { commits } = run([
       { type: 'text_delta', delta: 'I will inspect it.' },
