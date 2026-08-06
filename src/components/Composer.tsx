@@ -135,6 +135,12 @@ export function getSlashCompletionOptions(
 export default function Composer({ value, onChange, focusToken }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRequestRef = useRef(0)
+  /** 会话级发送历史：最近发送的 prompt，最新在前 */
+  const historyRef = useRef<string[]>([])
+  /** -1 = 未处于历史浏览状态；否则指向 historyRef 的当前索引 */
+  const historyIndexRef = useRef(-1)
+  /** 按 ↑ 进入历史前的草稿，供 ↓ 越界返回 */
+  const draftRef = useRef('')
   const isGenerating = useAppStore((s) => s.isGenerating)
   const generatingSessionId = useAppStore((s) => s.generatingSessionId)
   const sendMessage = useAppStore((s) => s.sendMessage)
@@ -191,6 +197,13 @@ export default function Composer({ value, onChange, focusToken }: Props) {
     if (activeSessionId && hasProjectContext) void refreshSkills(activeSessionId)
   }, [activeSessionId, hasProjectContext, refreshSkills])
 
+  // 会话切换后清空输入历史（spec：历史仅在当前会话内有效）
+  useEffect(() => {
+    historyRef.current = []
+    historyIndexRef.current = -1
+    draftRef.current = ''
+  }, [activeSessionId])
+
   useEffect(() => {
     if (completion?.kind !== 'files' || !activeSessionId || !hasProjectContext) {
       setFilesLoading(false)
@@ -234,8 +247,37 @@ export default function Composer({ value, onChange, focusToken }: Props) {
     const trimmed = value.trim()
     if (!trimmed || isGenerating || !activeSessionId || !hasProjectContext || !canUseCli) return
     sendMessage(trimmed)
+    historyRef.current = [trimmed, ...historyRef.current.filter((item) => item !== trimmed)].slice(0, 50)
+    historyIndexRef.current = -1
     onChange('')
     setCompletion(null)
+  }
+
+  /** ↑/↓ 历史导航：仅当无补全弹出且历史非空时生效。 */
+  const navigateHistory = (event: KeyboardEvent<HTMLTextAreaElement>, hasCompletion: boolean): boolean => {
+    if (hasCompletion) return false
+    const history = historyRef.current
+    if (history.length === 0) return false
+    event.preventDefault()
+    if (event.key === 'ArrowUp') {
+      if (historyIndexRef.current === -1) {
+        draftRef.current = value
+        historyIndexRef.current = history.length - 1
+      } else {
+        historyIndexRef.current = Math.max(0, historyIndexRef.current - 1)
+      }
+      onChange(history[historyIndexRef.current] ?? '')
+      return true
+    }
+    if (historyIndexRef.current === -1) return true
+    historyIndexRef.current += 1
+    if (historyIndexRef.current >= history.length) {
+      historyIndexRef.current = -1
+      onChange(draftRef.current)
+    } else {
+      onChange(history[historyIndexRef.current] ?? '')
+    }
+    return true
   }
 
   const updateCompletion = (nextValue: string, cursor: number) => {
@@ -256,7 +298,8 @@ export default function Composer({ value, onChange, focusToken }: Props) {
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return
-    if (completion && (completionOptions.length > 0 || filesLoading || (completion.kind === 'slash' && skillsLoading))) {
+    const hasCompletion = Boolean(completion && (completionOptions.length > 0 || filesLoading || (completion.kind === 'slash' && skillsLoading)))
+    if (hasCompletion) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         if (completionOptions.length) {
           event.preventDefault()
@@ -279,6 +322,8 @@ export default function Composer({ value, onChange, focusToken }: Props) {
         event.preventDefault()
         return
       }
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      if (navigateHistory(event, false)) return
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()

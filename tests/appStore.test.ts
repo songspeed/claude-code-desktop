@@ -202,4 +202,134 @@ describe('appStore initialization', () => {
       claudeUserModelConfig: expect.objectContaining({ defaultModel: 'sonnet' }),
     })
   })
+
+  it('retries the last interrupted turn with its user prompt and does nothing for completed turns', async () => {
+    mockIpc.sendMessage.mockClear()
+    const { useAppStore } = await import('../src/store/appStore')
+    useAppStore.setState({
+      cliAvailable: true,
+      activeSessionId: 'session-1',
+      sessions: [{
+        id: 'session-1', title: '新对话', claudeSessionId: null,
+        projectPath: '/tmp/project', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0,
+      }],
+      messages: { 'session-1': [] },
+      transcripts: {
+        'session-1': {
+          version: 2,
+          entries: [
+            { id: 'user-1', turnId: 'turn-1', sequence: 0, createdAt: 0, type: 'user', text: '帮我修一下登录' },
+            { id: 'term-1', turnId: 'turn-1', sequence: 1, createdAt: 1, type: 'terminal', outcome: 'interrupted', errorMessage: null, usage: null, partialMarkdown: '正在查看…' },
+          ],
+        },
+      },
+    })
+    const pre = useAppStore.getState()
+    expect(pre.cliAvailable).toBe(true)
+    expect(pre.isGenerating).toBe(false)
+    expect(pre.activeSessionId).toBe('session-1')
+
+    await useAppStore.getState().retryLastTurn('session-1')
+    expect(mockIpc.sendMessage).toHaveBeenCalledTimes(1)
+    expect(mockIpc.sendMessage.mock.calls[0]?.[0]).toMatchObject({ prompt: '帮我修一下登录' })
+
+    mockIpc.sendMessage.mockClear()
+    useAppStore.setState((state) => ({
+      isGenerating: false,
+      generatingSessionId: null,
+      transcripts: {
+        ...state.transcripts,
+        'session-1': {
+          ...state.transcripts['session-1']!,
+          entries: [
+            { id: 'user-1', turnId: 'turn-1', sequence: 0, createdAt: 0, type: 'user', text: '已完成' },
+            { id: 'term-1', turnId: 'turn-1', sequence: 1, createdAt: 1, type: 'terminal', outcome: 'completed', usage: null },
+          ],
+        },
+      },
+    }))
+
+    await useAppStore.getState().retryLastTurn('session-1')
+    expect(mockIpc.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects retrying while another turn is generating', async () => {
+    mockIpc.sendMessage.mockClear()
+    const { useAppStore } = await import('../src/store/appStore')
+    useAppStore.setState({
+      isGenerating: true,
+      activeSessionId: 'session-1',
+      sessions: [{
+        id: 'session-1', title: '新对话', claudeSessionId: null,
+        projectPath: '/tmp/project', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0,
+      }],
+      messages: { 'session-1': [] },
+      transcripts: {
+        'session-1': {
+          version: 2,
+          entries: [
+            { id: 'user-1', turnId: 'turn-1', sequence: 0, createdAt: 0, type: 'user', text: '继续' },
+            { id: 'term-1', turnId: 'turn-1', sequence: 1, createdAt: 1, type: 'terminal', outcome: 'error', errorMessage: 'boom', usage: null },
+          ],
+        },
+      },
+    })
+
+    await useAppStore.getState().retryLastTurn('session-1')
+    expect(mockIpc.sendMessage).not.toHaveBeenCalled()
+    expect(useAppStore.getState().statusText).toContain('等待')
+  })
+
+  it('creates an independent new turn after retry without disturbing the interrupted turn', async () => {
+    mockIpc.sendMessage.mockClear()
+    const { useAppStore } = await import('../src/store/appStore')
+
+    const claudeEventHandler = mockIpc.onClaudeEvent.mock.calls[0]?.[0] as
+      | ((sessionId: string, envelope: AgentEventEnvelope) => void)
+      | undefined
+    expect(claudeEventHandler).toBeTypeOf('function')
+
+    useAppStore.setState({
+      cliAvailable: true,
+      isGenerating: false,
+      generatingSessionId: null,
+      activeSessionId: 'session-1',
+      sessions: [{
+        id: 'session-1', title: '新对话', claudeSessionId: null,
+        projectPath: '/tmp/project', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0,
+      }],
+      messages: { 'session-1': [] },
+      transcripts: {
+        'session-1': {
+          version: 2,
+          entries: [
+            { id: 'user-1', turnId: 'turn-1', sequence: 0, createdAt: 0, type: 'user', text: '修一下登录' },
+            { id: 'term-1', turnId: 'turn-1', sequence: 1, createdAt: 1, type: 'terminal', outcome: 'interrupted', errorMessage: null, usage: null, partialMarkdown: '中途被停止' },
+          ],
+        },
+      },
+    })
+
+    await useAppStore.getState().retryLastTurn('session-1')
+    const retryCall = mockIpc.sendMessage.mock.calls[0]?.[0] as { sessionId: string; prompt: string; turnId: string }
+    expect(retryCall).toMatchObject({ sessionId: 'session-1', prompt: '修一下登录' })
+
+    claudeEventHandler?.('session-1', {
+      turnId: retryCall.turnId, sequence: 1, createdAt: 1, event: { type: 'text_delta', delta: '重试后正文' },
+    })
+    claudeEventHandler?.('session-1', {
+      turnId: retryCall.turnId, sequence: 2, createdAt: 2, event: { type: 'done', sessionId: 'claude-retry-session' },
+    })
+
+    const entries = useAppStore.getState().transcripts['session-1']?.entries ?? []
+    const terminals = entries.filter((entry) => entry.type === 'terminal')
+    expect(terminals).toHaveLength(2)
+    expect(terminals[0]).toMatchObject({ turnId: 'turn-1', outcome: 'interrupted' })
+    expect(terminals[1]).toMatchObject({ outcome: 'completed' })
+    expect(terminals[1]?.turnId).not.toBe('turn-1')
+
+    const markdown = entries.find((entry) => entry.type === 'assistant_markdown')
+    expect(markdown && 'markdown' in markdown ? markdown.markdown : '').toContain('重试后正文')
+    expect(useAppStore.getState().isGenerating).toBe(false)
+  })
 })

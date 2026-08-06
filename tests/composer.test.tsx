@@ -129,4 +129,24 @@ describe('Composer', () => {
     expect(source).toContain('role="listbox"')
     expect(source).toContain('role="option"')
   })
+
+  it('keeps history navigation separate from completions and clears history on session switch', () => {
+    const source = readFileSync(new URL('../src/components/Composer.tsx', import.meta.url), 'utf8')
+
+    // 历史导航仅在没有补全列表时生效
+    expect(source).toContain("if (hasCompletion) {")
+    expect(source).toContain("else if (event.key === 'ArrowUp' || event.key === 'ArrowDown')")
+    expect(source).toContain("navigateHistory(event, false)")
+
+    // 多行编辑（Shift+Enter）不触发发送，也就不会污染历史
+    expect(source).toContain("event.key === 'Enter' && !event.shiftKey")
+
+    // 会话级历史：切换会话后清空（AppState 依赖 activeSessionId）
+    expect(source).toContain("historyRef.current = []")
+    expect(source).toContain("historyIndexRef.current = -1")
+    expect(source).toContain("draftRef.current = ''")
+
+    // 历史有去重且限长
+    expect(source).toContain('historyRef.current = [trimmed, ...historyRef.current.filter((item) => item !== trimmed)].slice(0, 50)')
+  })
 })

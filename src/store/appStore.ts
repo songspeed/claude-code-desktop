@@ -89,6 +89,12 @@ export interface AppState {
   generatingSessionId: string | null
   /** 流式中 assistant 消息的累积文本（落盘前的临时状态） */
   streamingText: string
+  /** 流式思考过程（实时区折叠显示，不落盘） */
+  streamingThinking: string
+  /** 流式思考期间的估算 token 绝对值（实时计数，不落盘） */
+  streamingThinkingTokens: number | null
+  /** CLI 实时阶段信号（如「读取工作区」），非落盘 */
+  streamingPhase: string | null
   /** 过渡状态提示（如「服务繁忙，正在重试…」），非落盘 */
   statusText: string
   liveStatus: TranscriptNotice | null
@@ -140,6 +146,7 @@ export interface AppState {
   refreshCliAvailability: () => Promise<void>
   sendMessage: (prompt: string) => Promise<void>
   abortGeneration: (sessionId?: string) => Promise<void>
+  retryLastTurn: (sessionId: string) => Promise<void>
   setAppearancePreference: (preference: AppearancePreference) => Promise<void>
   setLocale: (locale: AppLocale) => Promise<void>
   loadAppInfo: () => Promise<void>
@@ -154,6 +161,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   isGenerating: false,
   generatingSessionId: null,
   streamingText: '',
+  streamingThinking: '',
+  streamingThinkingTokens: null,
+  streamingPhase: null,
   statusText: '',
   liveStatus: null,
   appearancePreference: 'system',
@@ -242,6 +252,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           return {
             // 冲刷提交与 liveText 归零在同一次 set 内完成，避免临时内容与正式条目重影。
             streamingText: task.assembler.liveText,
+            streamingThinking: task.assembler.liveThinking,
+            streamingThinkingTokens: task.assembler.liveThinkingTokens ?? null,
+            streamingPhase: task.assembler.livePhase ?? null,
             liveStatus: task.assembler.liveStatus,
             statusText: legacyStatusText(task.assembler.liveStatus),
             ...(completesCurrentTask ? { isGenerating: false, generatingSessionId: null } : {}),
@@ -435,8 +448,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  sendMessage: async (prompt: string) => {
-    const state = get()
+  sendMessage: async (prompt: string) => {    const state = get()
     if (state.isGenerating) return
     if (!prompt.trim()) return
 
@@ -479,6 +491,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       isGenerating: true,
       generatingSessionId: sessionId,
       streamingText: '',
+      streamingThinking: '',
+      streamingThinkingTokens: null,
+      streamingPhase: null,
       statusText: '',
       liveStatus: null,
       projectError: null,
@@ -522,6 +537,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         isGenerating: false,
         generatingSessionId: null,
         streamingText: '',
+        streamingThinking: '',
+        streamingThinkingTokens: null,
+        streamingPhase: null,
         statusText: '',
         liveStatus: null,
         transcripts: {
@@ -533,8 +551,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  abortGeneration: async (sessionId = get().activeSessionId ?? undefined) => {
-    if (!sessionId || get().generatingSessionId !== sessionId) return
+  retryLastTurn: async (sessionId: string) => {
+    const state = get()
+    if (state.isGenerating) {
+      set({ statusText: '已有任务在运行，请等待完成后再重试。' })
+      return
+    }
+    const transcript = state.transcripts[sessionId]
+    if (!transcript) return
+    const terminals = transcript.entries.filter((entry) => entry.type === 'terminal')
+    const last = terminals[terminals.length - 1]
+    if (!last || last.outcome === 'completed') return
+    let lastUserText: string | null = null
+    for (const entry of transcript.entries) {
+      if (entry.turnId !== last.turnId) continue
+      if (entry.type === 'user') lastUserText = entry.text
+    }
+    if (!lastUserText) return
+    if (state.activeSessionId !== sessionId) set({ activeSessionId: sessionId })
+    await get().sendMessage(lastUserText)
+  },
+
+  abortGeneration: async (sessionId = get().activeSessionId ?? undefined) => {    if (!sessionId || get().generatingSessionId !== sessionId) return
     await ipc.abortGeneration()
   },
 

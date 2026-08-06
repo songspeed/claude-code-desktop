@@ -25,6 +25,7 @@
     "react-dom": "19.1.0",
     "react-markdown": "10.1.0",
     "rehype-highlight": "7.0.2",
+    "remark-gfm": "^4.0.1",
     "uuid": "11.1.0",
     "zustand": "5.0.5"
   },
@@ -37,6 +38,7 @@
     "electron": "36.4.0",
     "electron-builder": "^26.15.7",
     "electron-vite": "3.1.0",
+    "happy-dom": "^20.11.1",
     "typescript": "5.8.3",
     "vite": "6.3.5",
     "vitest": "^3.2.4"
@@ -105,5 +107,10 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }
+  },
+  "allowScripts": {
+    "electron@36.4.0": true,
+    "esbuild@0.25.12": true,
+    "electron-winstaller@5.4.0": true
   }
 }
