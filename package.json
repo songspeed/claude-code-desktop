@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "description": "Desktop GUI wrapping the Claude Code CLI",
   "main": "out/main/index.js",
-  "author": "",
+  "author": "song <songzeng9528@gmail.com>",
   "license": "MIT",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/songspeed/claude-code-desktop.git"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
@@ -86,7 +90,7 @@
       ]
     },
     "linux": {
-      "icon": "resources/icons",
+      "icon": "resources/app-icon.png",
       "target": [
         {
           "target": "AppImage",
