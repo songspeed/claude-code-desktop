@@ -442,14 +442,13 @@ export function TodoProgressBar({ text }: { text: string }) {
       )}
       <button
         type="button"
-        className="terminal-action-button"
+        className="terminal-action-button copy-action-button"
         onClick={copy}
         disabled={!hasText}
-        title={t('copyTurn')}
+        title={copied ? t('copied') : t('copyTurn')}
         aria-label={t('copyTurn')}
       >
-        {copied ? <Check size={12} /> : <Clipboard size={12} />}
-        <span>{copied ? t('copied') : t('copyTurn')}</span>
+        {copied ? <Check size={14} /> : <Clipboard size={12} />}
       </button>
       {onRetry && (
         <button
