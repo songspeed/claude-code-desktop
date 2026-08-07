@@ -1,49 +1,41 @@
 /**
  * useRoundEndNotifications — 回合结束系统通知
- * 订阅 isGenerating 的下降沿，按结果（完成/失败/中断）发送 HTML5 Notification。
- * 纯切换会话（无回合开始/结束）不触发。
+ * Watch each session task independently and notify on its terminal transition.
+ * Session navigation alone does not trigger notifications.
  */
 import { useEffect, useRef } from 'react'
 import { useAppStore } from '../store/appStore'
 import { useTranslation } from '../i18n'
 
-interface GenerationWindow {
-  isGenerating: boolean
-  sessionId: string | null
-}
+type TaskSnapshot = Record<string, { turnId: string; status: string }>
 
 export function useRoundEndNotifications() {
-  const isGenerating = useAppStore((s) => s.isGenerating)
-  const generatingSessionId = useAppStore((s) => s.generatingSessionId)
+  const taskStates = useAppStore((s) => s.taskStates)
   const { t } = useTranslation()
-  const windowRef = useRef<GenerationWindow>({ isGenerating: false, sessionId: null })
+  const previousTasksRef = useRef<TaskSnapshot>({})
 
   useEffect(() => {
-    const prev = windowRef.current
-    const started = prev.isGenerating
-    const finishedNow = !isGenerating
-    const sessionId = isGenerating ? generatingSessionId : prev.sessionId
-    windowRef.current = { isGenerating, sessionId }
+    const previous = previousTasksRef.current
+    const next: TaskSnapshot = {}
+    const terminal = new Set(['cancelled', 'completed', 'error', 'interrupted'])
 
-    if (!started || !finishedNow || !sessionId) return
-    if (typeof Notification === 'undefined') return
+    for (const [sessionId, task] of Object.entries(taskStates)) {
+      next[sessionId] = { turnId: task.turnId, status: task.status }
+      const prior = previous[sessionId]
+      if (!prior || prior.turnId !== task.turnId || !terminal.has(task.status) || terminal.has(prior.status)) continue
+      if (typeof Notification === 'undefined') continue
 
-    const state = useAppStore.getState()
-    const session = state.sessions.find((item) => item.id === sessionId)
-    const transcript = state.transcripts[sessionId]
-    let outcome: 'completed' | 'error' | 'interrupted' = 'completed'
-    if (transcript) {
-      for (const entry of transcript.entries) {
-        if (entry.type === 'terminal') outcome = entry.outcome
-      }
+      const state = useAppStore.getState()
+      const session = state.sessions.find((item) => item.id === sessionId)
+      const body = task.status === 'error'
+        ? t('notificationFailed')
+        : task.status === 'completed'
+          ? t('notificationGenerated')
+          : t('notificationInterrupted')
+      const notification = new Notification(session?.title || t('conversation'), { body })
+      notification.onclick = () => window.focus()
     }
-    const body = outcome === 'error'
-      ? t('notificationFailed')
-      : outcome === 'interrupted'
-        ? t('notificationInterrupted')
-        : t('notificationGenerated')
-    const title = session?.title || t('conversation')
-    const notification = new Notification(title, { body })
-    notification.onclick = () => window.focus()
-  }, [isGenerating, generatingSessionId, t])
+
+    previousTasksRef.current = next
+  }, [taskStates, t])
 }

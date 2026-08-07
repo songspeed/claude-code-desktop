@@ -12,11 +12,10 @@ export default function PermissionPicker() {
   const sessions = useAppStore((state) => state.sessions)
   const activeSessionId = useAppStore((state) => state.activeSessionId)
   const setSessionPermissionMode = useAppStore((state) => state.setSessionPermissionMode)
-  const isGenerating = useAppStore((state) => state.isGenerating)
-  const generatingSessionId = useAppStore((state) => state.generatingSessionId)
+  const taskState = useAppStore((state) => state.taskStates[state.activeSessionId ?? ''])
   const [pendingMode, setPendingMode] = useState<PermissionMode | null>(null)
   const activeSession = sessions.find((session) => session.id === activeSessionId)
-  const isGeneratingActiveSession = isGenerating && generatingSessionId === activeSessionId
+  const isGeneratingActiveSession = taskState?.status === 'running' || taskState?.status === 'queued'
   const currentMode = activeSession?.permissionMode ?? DEFAULT_PERMISSION_MODE
   const { locale, t } = useTranslation()
 

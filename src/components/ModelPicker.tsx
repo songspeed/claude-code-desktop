@@ -24,12 +24,11 @@ export default function ModelPicker() {
   const sessions = useAppStore((s) => s.sessions)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const setSessionModel = useAppStore((s) => s.setSessionModel)
-  const isGenerating = useAppStore((s) => s.isGenerating)
-  const generatingSessionId = useAppStore((s) => s.generatingSessionId)
+  const taskState = useAppStore((s) => s.taskStates[s.activeSessionId ?? ''])
   const claudeUserModelConfig = useAppStore((s) => s.claudeUserModelConfig)
   const { t } = useTranslation()
   const activeSession = sessions.find((session) => session.id === activeSessionId)
-  const isGeneratingActiveSession = isGenerating && generatingSessionId === activeSessionId
+  const isGeneratingActiveSession = taskState?.status === 'running' || taskState?.status === 'queued'
   const currentModel: ModelId = activeSession?.model ?? DEFAULT_MODEL
 
   if (!activeSessionId) return null

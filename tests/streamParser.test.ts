@@ -375,6 +375,60 @@ describe('ClaudeRunner', () => {
     await completed
   })
 
+  it('synthesizes a terminal result when the process closes cleanly without one', async () => {
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter
+      stderr: EventEmitter
+      pid: number
+    }
+    proc.stdout = new EventEmitter()
+    proc.stderr = new EventEmitter()
+    proc.pid = 992
+
+    mockResolveClaudeExecutable.mockReturnValue({ execPath: '/tmp/claude', spawnPath: '/tmp' })
+    mockSpawn.mockReturnValue(proc as unknown as ChildProcess)
+
+    const events: AgentEvent[] = []
+    const runner = new ClaudeRunner()
+    const completed = runner.send(
+      { prompt: 'complete', model: 'sonnet', permissionMode: 'acceptEdits' },
+      (event) => events.push(event)
+    )
+    proc.emit('close', 0, null)
+    await completed
+
+    expect(events).toEqual([{ type: 'done', sessionId: '' }])
+  })
+
+  it('keeps a spawn error terminal when close delivers a late stream event', async () => {
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter
+      stderr: EventEmitter
+      pid: number
+    }
+    proc.stdout = new EventEmitter()
+    proc.stderr = new EventEmitter()
+    proc.pid = 993
+
+    mockResolveClaudeExecutable.mockReturnValue({ execPath: '/tmp/claude', spawnPath: '/tmp' })
+    mockSpawn.mockReturnValue(proc as unknown as ChildProcess)
+
+    const events: AgentEvent[] = []
+    const runner = new ClaudeRunner()
+    const completed = runner.send(
+      { prompt: 'spawn', model: 'sonnet', permissionMode: 'acceptEdits' },
+      (event) => events.push(event)
+    )
+
+    proc.emit('error', new Error('missing executable'))
+    proc.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'late' } } })}\n`))
+    proc.emit('close', 1, null)
+    await completed
+
+    expect(events).toEqual([{ type: 'error', message: 'Failed to spawn claude: missing executable' }])
+    expect(runner.isRunning).toBe(false)
+  })
+
   it('does not emit a second generic error after stream-json already reported one', async () => {
     const proc = new EventEmitter() as EventEmitter & {
       stdout: EventEmitter

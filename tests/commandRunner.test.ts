@@ -63,4 +63,21 @@ describe('readonly Claude command runner', () => {
 
     expect(events).toEqual([{ type: 'error', message: '无法启动 Claude CLI：missing executable' }])
   })
+
+  it('provides a task-scoped abort handle that retains an interrupted terminal event', async () => {
+    const proc = createProcess()
+    mockResolveClaudeExecutable.mockReturnValue({ execPath: '/tmp/claude', spawnPath: '/tmp' })
+    mockSpawn.mockReturnValue(proc as unknown as ChildProcess)
+    const events: AgentEvent[] = []
+    let abort: (() => void) | undefined
+
+    const completed = runReadonlyClaudeCommand(['doctor'], '/tmp/project', (event) => events.push(event), (handle) => {
+      abort = handle
+    })
+    abort?.()
+    proc.emit('close', null, 'SIGTERM')
+    await completed
+
+    expect(events).toEqual([{ type: 'aborted' }])
+  })
 })

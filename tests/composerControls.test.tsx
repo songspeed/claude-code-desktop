@@ -52,10 +52,10 @@ describe('组合器模型和授权控件', () => {
       fableModel: 'claude-fable-custom',
     })).toBe('Fable · claude-fable-custom')
     expect(modelSource).toContain('getModelOptionLabel(model, claudeUserModelConfig)')
-    expect(modelSource).toContain('generatingSessionId === activeSessionId')
+    expect(modelSource).toContain("taskState?.status === 'running' || taskState?.status === 'queued'")
     expect(modelSource).toContain('disabled={isGeneratingActiveSession}')
     expect(permissionSource).toContain('PERMISSION_OPTIONS.map')
-    expect(permissionSource).toContain('generatingSessionId === activeSessionId')
+    expect(permissionSource).toContain("taskState?.status === 'running' || taskState?.status === 'queued'")
     expect(permissionSource).toContain('disabled={isGeneratingActiveSession}')
   })
 

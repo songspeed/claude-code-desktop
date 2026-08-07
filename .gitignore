@@ -1,5 +1,6 @@
 # 依赖
 node_modules/
+.pnpm-store/
 
 # 构建产物
 out/
@@ -30,3 +31,4 @@ Thumbs.db
 # openspec
 .codex/
 .claude/
+.opencode/

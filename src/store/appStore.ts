@@ -18,12 +18,13 @@ import type {
   ModelId,
   PermissionMode,
   Session,
+  SessionTaskState,
   Transcript,
-  TranscriptNotice,
   TranscriptUserEntry,
 } from '../../electron/store/types'
 import { transcriptFromLegacyMessages } from '../../electron/store/types'
 import { TurnAssembler, type TranscriptCommit } from '../../electron/cli/turnAssembler'
+import type { AgentEvent } from '../../electron/cli/agentTransport'
 import { v4 as uuidv4 } from 'uuid'
 
 // React StrictMode 会重复执行挂载 effect。初始化和 IPC 订阅属于应用生命周期，
@@ -32,7 +33,15 @@ let initialization: Promise<void> | null = null
 
 // 当前回合的组装器（与主进程共用同一份组装逻辑）。单实例 Runner 仍然
 // 需要以会话和回合双重校验事件，避免迟到事件写入已切换或新开启的对话。
-let currentTask: { sessionId: string; turnId: string; assembler: TurnAssembler } | null = null
+const taskAssemblers = new Map<string, { turnId: string; assembler: TurnAssembler }>()
+
+function isActiveTask(task: SessionTaskState | undefined): boolean {
+  return task?.status === 'running' || task?.status === 'queued'
+}
+
+function isVisibleTaskOutput(event: AgentEvent): boolean {
+  return event.type !== 'session_init' && event.type !== 'usage'
+}
 
 function applyTranscriptCommits(transcript: Transcript, commits: TranscriptCommit[]): Transcript {
   const entries = [...transcript.entries]
@@ -62,13 +71,6 @@ function compatibilityMessages(messages: Message[], commits: TranscriptCommit[])
   return next
 }
 
-function legacyStatusText(status: TranscriptNotice | null): string {
-  if (status?.kind !== 'retry') return ''
-  const hint = status.status === 503 ? '服务繁忙' : status.status ? `服务返回 ${status.status}` : '网络异常'
-  const count = status.attempt ? `（第 ${status.attempt}${status.maxRetries ? `/${status.maxRetries}` : ''} 次）` : ''
-  return `${hint}，正在重试${count}…`
-}
-
 function getInitialEffectiveTheme(): EffectiveTheme {
   if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
     return 'dark'
@@ -82,22 +84,7 @@ export interface AppState {
   activeSessionId: string | null
   messages: Record<string, Message[]>   // sessionId → Message[]
   transcripts: Record<string, Transcript>
-
-  // ── 生成状态 ───────────────────────────────────────────
-  isGenerating: boolean
-  /** 当前单实例 Claude Runner 所属会话；不持久化，切换会话不会改变它。 */
-  generatingSessionId: string | null
-  /** 流式中 assistant 消息的累积文本（落盘前的临时状态） */
-  streamingText: string
-  /** 流式思考过程（实时区折叠显示，不落盘） */
-  streamingThinking: string
-  /** 流式思考期间的估算 token 绝对值（实时计数，不落盘） */
-  streamingThinkingTokens: number | null
-  /** CLI 实时阶段信号（如「读取工作区」），非落盘 */
-  streamingPhase: string | null
-  /** 过渡状态提示（如「服务繁忙，正在重试…」），非落盘 */
-  statusText: string
-  liveStatus: TranscriptNotice | null
+  taskStates: Record<string, SessionTaskState>
 
   // ── 外观 ────────────────────────────────────────────────
   appearancePreference: AppearancePreference
@@ -158,14 +145,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeSessionId: null,
   messages: {},
   transcripts: {},
-  isGenerating: false,
-  generatingSessionId: null,
-  streamingText: '',
-  streamingThinking: '',
-  streamingThinkingTokens: null,
-  streamingPhase: null,
-  statusText: '',
-  liveStatus: null,
+  taskStates: {},
   appearancePreference: 'system',
   effectiveTheme: getInitialEffectiveTheme(),
   appearanceError: null,
@@ -225,15 +205,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       // 订阅主进程的 claude:event 推送。组装规则由 TurnAssembler 统一承担，
-      // 本回调只负责：应用提交动作到内存、映射 liveText/statusText、复位生成态。
+      // Apply one task's commits and live stream only to its originating session.
       ipc.onClaudeEvent((sessionId, envelope) => {
-        const task = currentTask
-        if (!task || task.sessionId !== sessionId || task.turnId !== envelope.turnId) return
+        const task = taskAssemblers.get(sessionId)
+        const taskState = get().taskStates[sessionId]
+        if (!task || task.turnId !== envelope.turnId || taskState?.turnId !== envelope.turnId) return
 
         const commits = task.assembler.feed(envelope)
         const isTerminal =
           envelope.event.type === 'done' || envelope.event.type === 'aborted' || envelope.event.type === 'error'
-        const completesCurrentTask = isTerminal && get().generatingSessionId === task.sessionId
+        const completesTask = isTerminal
 
         set((s) => {
           let sessions = s.sessions
@@ -251,20 +232,45 @@ export const useAppStore = create<AppState>((set, get) => ({
 
           return {
             // 冲刷提交与 liveText 归零在同一次 set 内完成，避免临时内容与正式条目重影。
-            streamingText: task.assembler.liveText,
-            streamingThinking: task.assembler.liveThinking,
-            streamingThinkingTokens: task.assembler.liveThinkingTokens ?? null,
-            streamingPhase: task.assembler.livePhase ?? null,
-            liveStatus: task.assembler.liveStatus,
-            statusText: legacyStatusText(task.assembler.liveStatus),
-            ...(completesCurrentTask ? { isGenerating: false, generatingSessionId: null } : {}),
             sessions,
+            taskStates: {
+              ...s.taskStates,
+              [sessionId]: {
+                ...(s.taskStates[sessionId] ?? { sessionId, turnId: envelope.turnId, status: 'running', unreadOutputCount: 0 }),
+                status: isTerminal ? (envelope.event.type === 'done' ? 'completed' : envelope.event.type === 'error' ? 'error' : 'interrupted') : 'running',
+                unreadOutputCount: s.activeSessionId === sessionId
+                  ? 0
+                  : (s.taskStates[sessionId]?.unreadOutputCount ?? 0) + (isVisibleTaskOutput(envelope.event) ? 1 : 0),
+                streamingText: task.assembler.liveText,
+                streamingThinking: task.assembler.liveThinking,
+                streamingThinkingTokens: task.assembler.liveThinkingTokens ?? null,
+                streamingPhase: task.assembler.livePhase ?? null,
+                liveStatus: task.assembler.liveStatus,
+              },
+            },
             transcripts: { ...s.transcripts, [sessionId]: nextTranscript },
             messages: { ...s.messages, [sessionId]: compatibilityMessages(s.messages[sessionId] ?? [], commits) },
           }
         })
 
-        if (completesCurrentTask) currentTask = null
+        if (completesTask) taskAssemblers.delete(sessionId)
+      })
+
+      ipc.onTaskStatus?.(({ sessionId, turnId, status, queuePosition, externalProcessBoundary }) => {
+        const existing = get().taskStates[sessionId]
+        if (existing && existing.turnId !== turnId) return
+        if (status === 'cancelled') taskAssemblers.delete(sessionId)
+        set((state) => ({
+          taskStates: {
+            ...state.taskStates,
+            [sessionId]: {
+              ...(existing ?? { sessionId, turnId, unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null }),
+              status,
+              queuePosition,
+              externalProcessBoundary,
+            },
+          },
+        }))
       })
 
       // 订阅 sessions:updated 推送（标题自动生成）
@@ -300,7 +306,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   switchSession: async (id: string) => {
     const existing = get().transcripts[id]
-    set({ activeSessionId: id })
+    set((state) => {
+      const task = state.taskStates[id]
+      return {
+        activeSessionId: id,
+        ...(task?.unreadOutputCount
+          ? { taskStates: { ...state.taskStates, [id]: { ...task, unreadOutputCount: 0 } } }
+          : {}),
+      }
+    })
     if (existing) return
 
     const data = await ipc.getSessionData(id)
@@ -340,7 +354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setSessionModel: async (id: string, model: ModelId) => {
-    if (get().generatingSessionId === id) return
+    if (isActiveTask(get().taskStates[id])) return
     const updated = await ipc.updateSession(id, { model, updatedAt: Date.now() })
     if (!updated) return
     set((s) => ({
@@ -349,7 +363,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setSessionPermissionMode: async (id: string, permissionMode: PermissionMode) => {
-    if (get().generatingSessionId === id) return
+    if (isActiveTask(get().taskStates[id])) return
     const updated = await ipc.updateSession(id, { permissionMode, updatedAt: Date.now() })
     if (!updated) return
     set((s) => ({
@@ -358,7 +372,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   chooseProjectDirectory: async (id = get().activeSessionId ?? undefined) => {
-    if (!id || get().generatingSessionId === id) return
+    if (!id || isActiveTask(get().taskStates[id])) return
     try {
       const updated = await ipc.chooseProjectDirectory(id)
       if (!updated) return
@@ -449,7 +463,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   sendMessage: async (prompt: string) => {    const state = get()
-    if (state.isGenerating) return
     if (!prompt.trim()) return
 
     const sessionId = state.activeSessionId
@@ -457,6 +470,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const session = state.sessions.find((s) => s.id === sessionId)
     if (!session) return
+    if (isActiveTask(state.taskStates[sessionId])) return
     if (!session.projectPath) {
       set({ projectError: '请先为此对话选择本地项目目录。' })
       return
@@ -477,7 +491,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       createdAt,
     }
     // 新建本回合组装器，承接随后的 claude:event 事件
-    currentTask = { sessionId, turnId, assembler: new TurnAssembler(turnId) }
+    taskAssemblers.set(sessionId, { turnId, assembler: new TurnAssembler(turnId) })
     const userEntry: TranscriptUserEntry = {
       id: userMsg.id,
       turnId,
@@ -488,14 +502,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set((s) => ({
-      isGenerating: true,
-      generatingSessionId: sessionId,
-      streamingText: '',
-      streamingThinking: '',
-      streamingThinkingTokens: null,
-      streamingPhase: null,
-      statusText: '',
-      liveStatus: null,
+      taskStates: {
+        ...s.taskStates,
+        [sessionId]: { sessionId, turnId, status: 'running', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+      },
       projectError: null,
       messages: {
         ...s.messages,
@@ -529,19 +539,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         createdAt: Date.now(),
         event: { type: 'error' as const, message: String(err) },
       }
-      const task = currentTask
-      if (!task || task.sessionId !== sessionId || task.turnId !== turnId) return
+      const task = taskAssemblers.get(sessionId)
+      if (!task || task.turnId !== turnId) return
       const commits = task.assembler.feed(errorEnvelope)
-      currentTask = null
+      taskAssemblers.delete(sessionId)
       set((s) => ({
-        isGenerating: false,
-        generatingSessionId: null,
-        streamingText: '',
-        streamingThinking: '',
-        streamingThinkingTokens: null,
-        streamingPhase: null,
-        statusText: '',
-        liveStatus: null,
+        taskStates: { ...s.taskStates, [sessionId]: { ...s.taskStates[sessionId], status: 'error', streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null } },
         transcripts: {
           ...s.transcripts,
           [sessionId]: applyTranscriptCommits(s.transcripts[sessionId], commits),
@@ -553,10 +556,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   retryLastTurn: async (sessionId: string) => {
     const state = get()
-    if (state.isGenerating) {
-      set({ statusText: '已有任务在运行，请等待完成后再重试。' })
-      return
-    }
+    if (isActiveTask(state.taskStates[sessionId])) return
     const transcript = state.transcripts[sessionId]
     if (!transcript) return
     const terminals = transcript.entries.filter((entry) => entry.type === 'terminal')
@@ -572,8 +572,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().sendMessage(lastUserText)
   },
 
-  abortGeneration: async (sessionId = get().activeSessionId ?? undefined) => {    if (!sessionId || get().generatingSessionId !== sessionId) return
-    await ipc.abortGeneration()
+  abortGeneration: async (sessionId = get().activeSessionId ?? undefined) => {
+    if (!sessionId) return
+    const task = get().taskStates[sessionId]
+    if (!task || (task.status !== 'running' && task.status !== 'queued')) return
+    await ipc.abortGeneration({ sessionId, turnId: task.turnId })
   },
 
   setAppearancePreference: async (preference: AppearancePreference) => {

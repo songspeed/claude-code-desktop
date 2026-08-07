@@ -6,7 +6,6 @@ import Composer, {
   getComposerCompletion,
   getComposerPlaceholder,
   getComposerState,
-  getComposerTaskState,
   getSlashCompletionOptions,
 } from '../src/components/Composer'
 
@@ -46,17 +45,11 @@ describe('Composer', () => {
     expect(getComposerPlaceholder(false, true, true, true, 'en', true)).toBe('Another conversation is running a task. This conversation is read-only.')
   })
 
-  it('keeps another conversation read-only without exposing its stop action', () => {
-    expect(getComposerTaskState(true, 'running-session', 'viewed-session')).toEqual({
-      isGeneratingCurrentSession: false,
-      isTaskRunningElsewhere: true,
-      showStopAction: false,
-    })
-    expect(getComposerTaskState(true, 'running-session', 'running-session')).toEqual({
-      isGeneratingCurrentSession: true,
-      isTaskRunningElsewhere: false,
-      showStopAction: true,
-    })
+  it('derives controls only from the active session task', () => {
+    const source = readFileSync(new URL('../src/components/Composer.tsx', import.meta.url), 'utf8')
+    expect(source).toContain("s.taskStates[s.activeSessionId ?? '']")
+    expect(source).not.toContain('generatingSessionId')
+    expect(source).toContain('showStopAction = isGeneratingCurrentSession || isQueuedCurrentSession')
   })
 
   it('defines distinct ready, focused, and disabled action states', () => {

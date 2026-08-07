@@ -10,7 +10,8 @@ const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 export function runReadonlyClaudeCommand(
   args: string[],
   cwd: string,
-  onEvent: (event: AgentEvent) => void
+  onEvent: (event: AgentEvent) => void,
+  onAbortReady?: (abort: () => void) => void
 ): Promise<void> {
   const resolved = resolveClaudeExecutable()
   if (!resolved) {
@@ -25,6 +26,14 @@ export function runReadonlyClaudeCommand(
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: resolved.shell ?? false,
     })
+    let aborted = false
+    const abort = () => {
+      aborted = true
+      try {
+        proc.kill()
+      } catch { /* process may have already exited */ }
+    }
+    onAbortReady?.(abort)
     let output = ''
     let truncated = false
     let terminalEventSent = false
@@ -59,6 +68,10 @@ export function runReadonlyClaudeCommand(
     })
     proc.on('close', (code) => {
       finish(() => {
+        if (aborted) {
+          onEvent({ type: 'aborted' })
+          return
+        }
         const result = output.trim() || '命令未返回文本输出。'
         const safe = sanitizeActivityText(result, MAX_COMMAND_OUTPUT_BYTES)
         const annotations = [

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, Bot, Bug, Code2, FolderOpen, FolderSearch, ShieldCheck, Wrench } from 'lucide-react'
+import { ArrowDown, Bot, Bug, CircleAlert, Code2, FolderOpen, FolderSearch, ShieldCheck, Wrench, X } from 'lucide-react'
 import { useAppStore } from '../store/appStore'
 import { translate, useTranslation, type TranslationKey } from '../i18n'
 import Composer from './Composer'
@@ -94,18 +94,19 @@ export function nextUnseenOutputCount(
 export default function ChatView({ sessionId }: Props) {
   const messages = useAppStore((s) => s.messages[sessionId] ?? EMPTY_MESSAGES)
   const transcript = useAppStore((s) => s.transcripts[sessionId])
-  const isGenerating = useAppStore((s) => s.isGenerating)
-  const generatingSessionId = useAppStore((s) => s.generatingSessionId)
-  const streamingText = useAppStore((s) => s.streamingText)
-  const streamingThinking = useAppStore((s) => s.streamingThinking)
-  const streamingThinkingTokens = useAppStore((s) => s.streamingThinkingTokens)
-  const streamingPhase = useAppStore((s) => s.streamingPhase)
-  const liveStatus = useAppStore((s) => s.liveStatus)
+  const taskState = useAppStore((s) => s.taskStates[sessionId])
+  const isGenerating = taskState?.status === 'running'
+  const streamingText = taskState?.streamingText ?? ''
+  const streamingThinking = taskState?.streamingThinking ?? ''
+  const streamingThinkingTokens = taskState?.streamingThinkingTokens ?? null
+  const streamingPhase = taskState?.streamingPhase ?? null
+  const liveStatus = taskState?.liveStatus ?? null
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const sessions = useAppStore((s) => s.sessions)
   const projectError = useAppStore((s) => s.projectError)
   const chooseProjectDirectory = useAppStore((s) => s.chooseProjectDirectory)
   const revealProjectDirectory = useAppStore((s) => s.revealProjectDirectory)
+  const abortGeneration = useAppStore((s) => s.abortGeneration)
   const { locale, t } = useTranslation()
 
   const [draft, setDraft] = useState('')
@@ -117,7 +118,7 @@ export default function ChatView({ sessionId }: Props) {
   const viewedSessionRef = useRef<string | null>(null)
   const session = sessions.find((item) => item.id === sessionId)
   const isActiveSession = activeSessionId === sessionId
-  const isGeneratingSession = isGenerating && generatingSessionId === sessionId
+  const isGeneratingSession = isGenerating
   // 节流后的流式值同时驱动输出签名与渲染，保证「未读输出」计数不与显示错位。
   const visibleStreamingText = useThrottledStream(isGeneratingSession ? streamingText : '')
   const visibleStreamingThinking = useThrottledStream(isGeneratingSession ? streamingThinking : '')
@@ -271,6 +272,15 @@ export default function ChatView({ sessionId }: Props) {
               liveStatus={visibleLiveStatus}
               projectPath={projectPath}
             />
+          )}
+          {taskState?.status === 'queued' && (
+            <div className="generation-status queued-task-status" role="status">
+              <span>{taskState.queuePosition ? t('queuedTaskPosition').replace('{position}', String(taskState.queuePosition)) : t('queuedTask')}</span>
+              <button className="icon-button compact" onClick={() => void abortGeneration(sessionId)} title={t('cancelQueuedTask')} aria-label={t('cancelQueuedTask')}><X size={15} /></button>
+            </div>
+          )}
+          {taskState && (taskState.status === 'queued' || taskState.status === 'running') && taskState.externalProcessBoundary && (
+            <div className="task-boundary-notice" role="note" title={t('externalProcessBoundary')}><CircleAlert size={13} /> {t('externalProcessBoundary')}</div>
           )}
         </div>
       </div>

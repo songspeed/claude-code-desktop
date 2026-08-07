@@ -293,6 +293,38 @@ export interface Session {
   updatedAt: number
 }
 
+/** A non-persisted runtime task owned by one GUI session. */
+export type SessionTaskStatus = 'queued' | 'running' | 'cancelled' | 'completed' | 'error' | 'interrupted'
+
+export type SessionTaskKey = `${string}:${string}`
+
+export function sessionTaskKey(sessionId: string, turnId: string): SessionTaskKey {
+  return `${sessionId}:${turnId}`
+}
+
+export interface SessionTaskStatusUpdate {
+  sessionId: string
+  turnId: string
+  status: Extract<SessionTaskStatus, 'queued' | 'running' | 'cancelled'>
+  queuePosition?: number
+  externalProcessBoundary: boolean
+}
+
+export interface SessionTaskState {
+  sessionId: string
+  turnId: string
+  status: SessionTaskStatus
+  queuePosition?: number
+  unreadOutputCount: number
+  streamingText: string
+  streamingThinking: string
+  streamingThinkingTokens: number | null
+  streamingPhase: string | null
+  liveStatus: TranscriptNotice | null
+  /** Scheduler only coordinates tasks launched by this desktop process. */
+  externalProcessBoundary?: boolean
+}
+
 /** 存储于磁盘的会话数据（含消息） */
 export interface SessionData {
   session: Session

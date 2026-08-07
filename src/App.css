@@ -158,6 +158,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .session-item-content { flex: 1; min-width: 0; }
 .session-title { overflow: hidden; font-size: 13px; font-weight: 520; text-overflow: ellipsis; white-space: nowrap; }
 .session-time { margin-top: 2px; color: var(--text-muted); font-size: 11px; }
+.session-time.is-unread { color: var(--accent); font-weight: 600; }
 .session-title-input { width: 100%; padding: 4px 6px; color: var(--text-primary); background: var(--surface); border: 1px solid var(--accent); border-radius: 4px; }
 .session-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 120ms ease; }
 .session-item:hover .session-actions, .session-item.is-active .session-actions, .session-item.is-editing .session-actions { opacity: 1; }
@@ -269,6 +270,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .usage-line { margin: -4px 0 14px; color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
 .terminal-usage .usage-line { margin: 2px 0 14px; }
 .generation-status { display: flex; align-items: center; gap: 9px; margin: 14px 0; color: var(--text-muted); font-size: 13px; }
+.queued-task-status { justify-content: space-between; }
+.task-boundary-notice { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 14px; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.task-boundary-notice svg { flex: 0 0 auto; margin-top: 1px; }
 .status-spinner { width: 14px; height: 14px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 900ms linear infinite; }
 .status-phase { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em; }
 .transcript-notice { display: flex; align-items: center; gap: 7px; margin: 8px 0 16px; color: var(--text-secondary); font-size: 12px; }
@@ -565,6 +569,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .terminal-action-button { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }
 .terminal-action-button:hover:not(:disabled) { color: var(--text-primary); background: var(--surface-hover); }
 .terminal-action-button:disabled { opacity: 0.45; cursor: default; }
+.copy-action-button { opacity: 0; transition: opacity 0.15s ease; }
+.terminal-meta-row:hover .copy-action-button:not(:disabled) { opacity: 1; }
+.copy-action-button:focus-visible { opacity: 1; }
 
 /* ── 第三轮：命令面板 ──────────────────────────────────── */
 .command-palette-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; background: color-mix(in srgb, var(--text-primary) 22%, transparent); }

@@ -30,7 +30,14 @@ describe('workspace file references', () => {
     writeFileSync(join(project, 'node_modules', 'pkg', 'index.js'), 'ignored')
     writeFileSync(join(project, 'dist', 'app.js'), 'ignored')
     writeFileSync(join(outside, 'secret.txt'), 'outside')
-    symlinkSync(join(outside, 'secret.txt'), join(project, 'external-link.txt'))
+    // Windows file symlinks require a privilege that is not available in all
+    // developer environments; directory junctions exercise the same exclusion
+    // path without requiring Administrator or Developer Mode.
+    if (process.platform === 'win32') {
+      symlinkSync(outside, join(project, 'external-link'), 'junction')
+    } else {
+      symlinkSync(join(outside, 'secret.txt'), join(project, 'external-link.txt'))
+    }
 
     expect(listWorkspaceFiles(project).map((file) => file.path)).toEqual([
       '.github/workflows/check.yml',

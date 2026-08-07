@@ -24,7 +24,7 @@ function formatSessionTime(updatedAt: number, locale: string): string {
 export default function SessionList({ isSettings, onOpenSettings, onOpenChat, onCollapse }: Props) {
   const sessions = useAppStore((s) => s.sessions)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
-  const isGenerating = useAppStore((s) => s.isGenerating)
+  const taskStates = useAppStore((s) => s.taskStates)
   const createSession = useAppStore((s) => s.createSession)
   const switchSession = useAppStore((s) => s.switchSession)
   const renameSession = useAppStore((s) => s.renameSession)
@@ -97,7 +97,7 @@ export default function SessionList({ isSettings, onOpenSettings, onOpenChat, on
             await createSession()
             onOpenChat()
           }}
-          disabled={isGenerating}
+          disabled={false}
           title={t('newConversation')}
         >
           <Plus size={16} />
@@ -119,6 +119,7 @@ export default function SessionList({ isSettings, onOpenSettings, onOpenChat, on
           const isActive = session.id === activeSessionId
           const isEditing = editingId === session.id
           const projectName = session.projectPath?.split(/[\\/]/).filter(Boolean).pop()
+          const taskState = taskStates[session.id]
 
           return (
             <div
@@ -158,6 +159,11 @@ export default function SessionList({ isSettings, onOpenSettings, onOpenChat, on
                 ) : (
                   <>
                     <div className="session-title">{session.title}</div>
+                    {taskState?.status === 'running' && <div className="session-time">{t('claudeProcessing')}</div>}
+                    {taskState?.status === 'queued' && <div className="session-time">{taskState.queuePosition ? t('queuedTaskPosition').replace('{position}', String(taskState.queuePosition)) : t('queuedTask')}</div>}
+                    {Boolean(taskState?.unreadOutputCount) && (
+                      <div className="session-time is-unread">{t('newOutputCount').replace('{count}', String(taskState?.unreadOutputCount))}</div>
+                    )}
                     <div className="session-time" title={session.projectPath ?? undefined}>
                       {projectName ? `${projectName} · ${formatSessionTime(session.updatedAt, locale)}` : t('noProjectLinked')}
                     </div>

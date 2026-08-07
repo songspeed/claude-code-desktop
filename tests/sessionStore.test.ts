@@ -165,6 +165,30 @@ describe('sessionStore 写入异常保护 (BUG-1)', () => {
     ])
   })
 
+  it('keeps concurrent event streams isolated across session files', async () => {
+    expect(createSession(makeSession('parallel-1'))).toBe(true)
+    expect(createSession(makeSession('parallel-2'))).toBe(true)
+
+    const results = await Promise.all([
+      Promise.resolve(applyTranscriptCommits('parallel-1', [{
+        kind: 'append',
+        entry: { id: 'turn-1:text', turnId: 'turn-1', sequence: 1, createdAt: 1, type: 'assistant_markdown', markdown: 'one' },
+      }])),
+      Promise.resolve(applyTranscriptCommits('parallel-2', [{
+        kind: 'append',
+        entry: { id: 'turn-2:text', turnId: 'turn-2', sequence: 1, createdAt: 1, type: 'assistant_markdown', markdown: 'two' },
+      }])),
+    ])
+
+    expect(results.every(Boolean)).toBe(true)
+    expect(getSessionData('parallel-1')?.transcript?.entries).toEqual([
+      expect.objectContaining({ turnId: 'turn-1', markdown: 'one' }),
+    ])
+    expect(getSessionData('parallel-2')?.transcript?.entries).toEqual([
+      expect.objectContaining({ turnId: 'turn-2', markdown: 'two' }),
+    ])
+  })
+
   it('does not partially commit transcript changes when the atomic write fails', () => {
     expect(createSession(makeSession('atomic-transcript'))).toBe(true)
     const before = readFileSync(join(mockUserData.dir, 'sessions', 'atomic-transcript.json'), 'utf8')

@@ -30,7 +30,7 @@ export default function App() {
   const cliError = useAppStore((s) => s.cliError)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const sessions = useAppStore((s) => s.sessions)
-  const isGenerating = useAppStore((s) => s.isGenerating)
+  const activeTask = useAppStore((s) => s.taskStates[s.activeSessionId ?? ''])
   const createSession = useAppStore((s) => s.createSession)
   const switchSession = useAppStore((s) => s.switchSession)
   const chooseProjectDirectory = useAppStore((s) => s.chooseProjectDirectory)
@@ -78,6 +78,7 @@ export default function App() {
 
   // 窗口标题反映生成状态
   const activeSession = sessions.find((session) => session.id === activeSessionId)
+  const isGenerating = activeTask?.status === 'running'
   useEffect(() => {
     const base = activeSession?.title || t('conversation')
     document.title = isGenerating ? `${base} · ${t('generatingTitleSuffix')}` : base

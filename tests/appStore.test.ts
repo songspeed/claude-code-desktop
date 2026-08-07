@@ -14,10 +14,14 @@ const { mockIpc } = vi.hoisted(() => ({
     onLocaleChanged: vi.fn(),
     listSessions: vi.fn(),
     onClaudeEvent: vi.fn(),
+    onTaskStatus: vi.fn(),
     onSessionUpdated: vi.fn(),
     sendMessage: vi.fn(),
+    abortGeneration: vi.fn(),
   },
 }))
+
+let taskStatusHandler: ((status: { sessionId: string; turnId: string; status: 'queued' | 'running' | 'cancelled'; queuePosition?: number; externalProcessBoundary: boolean }) => void) | undefined
 
 vi.mock('../src/ipc', () => ({ ipc: mockIpc }))
 
@@ -44,6 +48,10 @@ describe('appStore initialization', () => {
       return vi.fn()
     })
     mockIpc.onSessionUpdated.mockReturnValue(vi.fn())
+    mockIpc.onTaskStatus.mockImplementation((handler) => {
+      taskStatusHandler = handler
+      return vi.fn()
+    })
     mockIpc.onAppearanceChanged.mockImplementation((handler) => {
       appearanceChangedHandler = handler
       return vi.fn()
@@ -71,7 +79,7 @@ describe('appStore initialization', () => {
     claudeEventHandler?.('session-1', {
       turnId: 'ignored-turn', sequence: 1, createdAt: 1, event: { type: 'text_delta', delta: 'ignored' },
     })
-    expect(useAppStore.getState().streamingText).toBe('')
+    expect(useAppStore.getState().taskStates['session-1']).toBeUndefined()
 
     // 开启一个回合（sendMessage 内部新建组装器），事件方才流入 streamingText
     useAppStore.setState({
@@ -87,7 +95,7 @@ describe('appStore initialization', () => {
     claudeEventHandler?.('session-1', {
       turnId: sent.turnId, sequence: 1, createdAt: 1, event: { type: 'text_delta', delta: 'once' },
     })
-    expect(useAppStore.getState().streamingText).toBe('once')
+    expect(useAppStore.getState().taskStates['session-1']?.streamingText).toBe('once')
 
     const messagesBeforeThemeChange = useAppStore.getState().messages
     appearanceChangedHandler?.({ preference: 'system', effectiveTheme: 'dark' })
@@ -95,9 +103,9 @@ describe('appStore initialization', () => {
     expect(useAppStore.getState()).toMatchObject({
       appearancePreference: 'system',
       effectiveTheme: 'dark',
-      streamingText: 'once',
       messages: messagesBeforeThemeChange,
     })
+    expect(useAppStore.getState().taskStates['session-1']?.streamingText).toBe('once')
 
     // 切换会话只改变导航目标：运行中的任务仍属于 session-1，且不会将流式
     // 结果或终止状态写到 session-2。
@@ -110,24 +118,29 @@ describe('appStore initialization', () => {
       transcripts: { ...state.transcripts, 'session-2': { version: 2, entries: [] } },
     }))
     await useAppStore.getState().switchSession('session-2')
-    expect(useAppStore.getState()).toMatchObject({
-      activeSessionId: 'session-2',
-      isGenerating: true,
-      generatingSessionId: 'session-1',
-    })
+    expect(useAppStore.getState().activeSessionId).toBe('session-2')
+    expect(useAppStore.getState().taskStates['session-1']?.status).toBe('running')
+    expect(useAppStore.getState().taskStates['session-2']).toBeUndefined()
 
     claudeEventHandler?.('session-1', {
       turnId: sent.turnId, sequence: 2, createdAt: 2, event: { type: 'done', sessionId: 'claude-session-1' },
     })
     const completedState = useAppStore.getState()
-    expect(completedState).toMatchObject({
-      activeSessionId: 'session-2',
-      isGenerating: false,
-      generatingSessionId: null,
-    })
+    expect(completedState.activeSessionId).toBe('session-2')
+    expect(completedState.taskStates['session-1']?.status).toBe('completed')
+    expect(completedState.taskStates['session-1']?.unreadOutputCount).toBe(1)
     expect(completedState.messages['session-1']?.some((message) => message.role === 'assistant' && message.text === 'once')).toBe(true)
     expect(completedState.messages['session-2']).toEqual([])
     expect(completedState.transcripts['session-2']?.entries).toEqual([])
+
+    await useAppStore.getState().switchSession('session-1')
+    expect(useAppStore.getState().taskStates['session-1']?.unreadOutputCount).toBe(0)
+
+    // A stale turn from the same session cannot mutate the completed retry.
+    claudeEventHandler?.('session-1', {
+      turnId: 'stale-turn', sequence: 99, createdAt: 99, event: { type: 'text_delta', delta: 'stale' },
+    })
+    expect(useAppStore.getState().transcripts['session-1']?.entries.some((entry) => entry.type === 'assistant_markdown' && entry.markdown === 'stale')).toBe(false)
 
     mockIpc.setLocale.mockResolvedValue({ locale: 'zh-CN', persisted: true })
     await useAppStore.getState().setLocale('zh-CN')
@@ -214,6 +227,7 @@ describe('appStore initialization', () => {
         projectPath: '/tmp/project', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0,
       }],
       messages: { 'session-1': [] },
+      taskStates: {},
       transcripts: {
         'session-1': {
           version: 2,
@@ -226,17 +240,17 @@ describe('appStore initialization', () => {
     })
     const pre = useAppStore.getState()
     expect(pre.cliAvailable).toBe(true)
-    expect(pre.isGenerating).toBe(false)
+    expect(pre.taskStates['session-1']).toBeUndefined()
     expect(pre.activeSessionId).toBe('session-1')
 
     await useAppStore.getState().retryLastTurn('session-1')
     expect(mockIpc.sendMessage).toHaveBeenCalledTimes(1)
     expect(mockIpc.sendMessage.mock.calls[0]?.[0]).toMatchObject({ prompt: '帮我修一下登录' })
+    const retryTurnId = mockIpc.sendMessage.mock.calls[0]?.[0]?.turnId as string
+    taskStatusHandler?.({ sessionId: 'session-1', turnId: retryTurnId, status: 'cancelled', externalProcessBoundary: true })
 
     mockIpc.sendMessage.mockClear()
     useAppStore.setState((state) => ({
-      isGenerating: false,
-      generatingSessionId: null,
       transcripts: {
         ...state.transcripts,
         'session-1': {
@@ -257,13 +271,15 @@ describe('appStore initialization', () => {
     mockIpc.sendMessage.mockClear()
     const { useAppStore } = await import('../src/store/appStore')
     useAppStore.setState({
-      isGenerating: true,
       activeSessionId: 'session-1',
       sessions: [{
         id: 'session-1', title: '新对话', claudeSessionId: null,
         projectPath: '/tmp/project', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0,
       }],
       messages: { 'session-1': [] },
+      taskStates: {
+        'session-1': { sessionId: 'session-1', turnId: 'active-turn', status: 'running', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+      },
       transcripts: {
         'session-1': {
           version: 2,
@@ -277,7 +293,6 @@ describe('appStore initialization', () => {
 
     await useAppStore.getState().retryLastTurn('session-1')
     expect(mockIpc.sendMessage).not.toHaveBeenCalled()
-    expect(useAppStore.getState().statusText).toContain('等待')
   })
 
   it('creates an independent new turn after retry without disturbing the interrupted turn', async () => {
@@ -291,14 +306,13 @@ describe('appStore initialization', () => {
 
     useAppStore.setState({
       cliAvailable: true,
-      isGenerating: false,
-      generatingSessionId: null,
       activeSessionId: 'session-1',
       sessions: [{
         id: 'session-1', title: '新对话', claudeSessionId: null,
         projectPath: '/tmp/project', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0,
       }],
       messages: { 'session-1': [] },
+      taskStates: {},
       transcripts: {
         'session-1': {
           version: 2,
@@ -330,6 +344,47 @@ describe('appStore initialization', () => {
 
     const markdown = entries.find((entry) => entry.type === 'assistant_markdown')
     expect(markdown && 'markdown' in markdown ? markdown.markdown : '').toContain('重试后正文')
-    expect(useAppStore.getState().isGenerating).toBe(false)
+    expect(useAppStore.getState().taskStates['session-1']?.status).toBe('completed')
+  })
+
+  it('targets abort and cancellation state to one session task', async () => {
+    const { useAppStore } = await import('../src/store/appStore')
+    useAppStore.setState({
+      activeSessionId: 'session-1',
+      taskStates: {
+        'session-1': { sessionId: 'session-1', turnId: 'turn-1', status: 'running', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+        'session-2': { sessionId: 'session-2', turnId: 'turn-2', status: 'running', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+      },
+    })
+    await useAppStore.getState().abortGeneration('session-1')
+    expect(mockIpc.abortGeneration).toHaveBeenCalledWith({ sessionId: 'session-1', turnId: 'turn-1' })
+    taskStatusHandler?.({ sessionId: 'session-1', turnId: 'turn-1', status: 'cancelled', externalProcessBoundary: true })
+    expect(useAppStore.getState().taskStates['session-2']?.status).toBe('running')
+  })
+
+  it('allows a different session to submit while another session is active', async () => {
+    mockIpc.sendMessage.mockClear()
+    const { useAppStore } = await import('../src/store/appStore')
+    useAppStore.setState({
+      cliAvailable: true,
+      activeSessionId: 'session-2',
+      sessions: [
+        { id: 'session-1', title: 'First', claudeSessionId: null, projectPath: '/tmp/project-a', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0 },
+        { id: 'session-2', title: 'Second', claudeSessionId: null, projectPath: '/tmp/project-b', model: 'opus', permissionMode: 'plan', createdAt: 0, updatedAt: 0 },
+      ],
+      messages: { 'session-1': [], 'session-2': [] },
+      transcripts: { 'session-1': { version: 2, entries: [] }, 'session-2': { version: 2, entries: [] } },
+      taskStates: {
+        'session-1': { sessionId: 'session-1', turnId: 'turn-1', status: 'running', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+      },
+    })
+
+    await useAppStore.getState().sendMessage('independent task')
+
+    expect(mockIpc.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-2', prompt: 'independent task' }))
+    const turnId = mockIpc.sendMessage.mock.calls[0]?.[0]?.turnId as string
+    expect(useAppStore.getState().taskStates['session-1']?.status).toBe('running')
+    expect(useAppStore.getState().taskStates['session-2']?.turnId).toBe(turnId)
+    taskStatusHandler?.({ sessionId: 'session-2', turnId, status: 'cancelled', externalProcessBoundary: true })
   })
 })

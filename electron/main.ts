@@ -12,6 +12,7 @@ import { existsSync, realpathSync, statSync } from 'fs'
 import { join } from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { ClaudeRunner } from './cli/claudeRunner'
+import { WorkspaceScheduler, accessForPermissionMode, canonicalWorkspaceKey } from './cli/workspaceScheduler'
 import { runReadonlyClaudeCommand } from './cli/commandRunner'
 import { formatDesktopCommandResponse } from './cli/desktopCommandResponses'
 import { parseDesktopSlashCommand } from './cli/slashCommands'
@@ -37,10 +38,13 @@ import type {
   AppearanceUpdateResult,
   LocaleUpdateResult,
   Message,
+  PermissionMode,
   Session,
+  SessionTaskKey,
+  SessionTaskStatusUpdate,
   TranscriptUserEntry,
 } from './store/types'
-import { DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, normalizePermissionMode } from './store/types'
+import { DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, normalizePermissionMode, sessionTaskKey } from './store/types'
 import {
   normalizeAppearancePreference,
   readAppearancePreference,
@@ -94,9 +98,70 @@ function createWindow(): BrowserWindow {
   return win
 }
 
-// ─── Claude Runner（单例，每次 send 共用）──────────────────────────────────
+// ─── Session tasks and workspace scheduling ───────────────────────────────
 
-const runner = new ClaudeRunner()
+interface RuntimeTask {
+  id: SessionTaskKey
+  sessionId: string
+  turnId: string
+  runner: ClaudeRunner | null
+  abort: (() => void) | null
+  sender: Electron.WebContents
+  workspaceKey: string
+  status: 'queued' | 'running'
+  assembler: TurnAssembler
+  sequence: number
+}
+
+const scheduler = new WorkspaceScheduler()
+const tasksBySession = new Map<string, RuntimeTask>()
+const tasksById = new Map<string, RuntimeTask>()
+
+function emitTaskStatus(task: RuntimeTask, status: 'queued' | 'running' | 'cancelled', queuePosition?: number): void {
+  if (!task.sender.isDestroyed()) {
+    const update: SessionTaskStatusUpdate = {
+      sessionId: task.sessionId,
+      turnId: task.turnId,
+      status,
+      queuePosition,
+      externalProcessBoundary: true,
+    }
+    task.sender.send('claude:task-status', update)
+  }
+}
+
+function emitTaskEvent(task: RuntimeTask, event: AgentEvent): void {
+  const envelope: AgentEventEnvelope = {
+    turnId: task.turnId,
+    sequence: ++task.sequence,
+    createdAt: Date.now(),
+    event,
+  }
+  const commits = task.assembler.feed(envelope)
+  applyTranscriptCommits(task.sessionId, commits)
+  for (const commit of commits) {
+    if (commit.kind === 'session') {
+      updateSession(task.sessionId, { claudeSessionId: commit.claudeSessionId, updatedAt: Date.now() })
+    }
+  }
+  if (!task.sender.isDestroyed()) task.sender.send('claude:event', { sessionId: task.sessionId, envelope })
+}
+
+function finishTask(task: RuntimeTask): void {
+  if (tasksById.get(task.id) !== task) return
+  tasksById.delete(task.id)
+  if (tasksBySession.get(task.sessionId) === task) tasksBySession.delete(task.sessionId)
+  scheduler.release(task.id)
+}
+
+function cancelQueuedTask(task: RuntimeTask, drain = true): boolean {
+  if (!scheduler.cancel(task.id, drain)) return false
+  emitTaskEvent(task, { type: 'aborted' })
+  tasksById.delete(task.id)
+  if (tasksBySession.get(task.sessionId) === task) tasksBySession.delete(task.sessionId)
+  emitTaskStatus(task, 'cancelled')
+  return true
+}
 
 function requireProjectDirectory(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) {
@@ -177,6 +242,8 @@ ipcMain.handle(
     if (!session) throw new Error('找不到当前对话。')
     const projectPath = requireProjectDirectory(session.projectPath)
 
+    if (tasksBySession.has(sessionId)) throw new Error('This conversation already has a running or queued task.')
+
     // 持久化用户消息
     const userMsg: Message = {
       id: messageId,
@@ -197,81 +264,81 @@ ipcMain.handle(
       throw new Error('无法保存用户消息。')
     }
 
-    // 组装器为唯一的「事件 → 有序记录」规则来源；序列号由主进程统一分配。
-    const assembler = new TurnAssembler(turnId)
-    let sequence = 0
-    const desktopCommand = parseDesktopSlashCommand(prompt)
+    const taskId = sessionTaskKey(sessionId, turnId)
+    const task: RuntimeTask = {
+      id: taskId,
+      sessionId,
+      turnId,
+      runner: null,
+      abort: null,
+      sender,
+      workspaceKey: canonicalWorkspaceKey(projectPath),
+      status: 'queued',
+      assembler: new TurnAssembler(turnId),
+      sequence: 0,
+    }
+    tasksBySession.set(sessionId, task)
+    tasksById.set(taskId, task)
 
-    const emitEvent = (ev: AgentEvent) => {
-      const envelope: AgentEventEnvelope = {
-        turnId,
-        sequence: ++sequence,
-        createdAt: Date.now(),
-        event: ev,
-      }
-      const commits = assembler.feed(envelope)
-
-      // 主进程先持久化，再向渲染层转发同一个带稳定标识的事件包。
-      applyTranscriptCommits(sessionId, commits)
-      for (const commit of commits) {
-        if (commit.kind === 'session') {
-          updateSession(sessionId, {
-            claudeSessionId: commit.claudeSessionId,
-            updatedAt: Date.now(),
-          })
+    const start = () => {
+      task.status = 'running'
+      emitTaskStatus(task, 'running')
+      const desktopCommand = parseDesktopSlashCommand(prompt)
+      const emitEvent = (ev: AgentEvent) => {
+        emitTaskEvent(task, ev)
+        if (!desktopCommand && ev.type === 'done') {
+          const currentSession = listSessions().find((candidate) => candidate.id === sessionId)
+          if (currentSession && currentSession.title === '新对话') {
+            const title = prompt.slice(0, 30) + (prompt.length > 30 ? '…' : '')
+            updateSession(sessionId, { title, updatedAt: Date.now() })
+            if (!sender.isDestroyed()) sender.send('sessions:updated', { sessionId, title })
+          }
         }
       }
-      if (!sender.isDestroyed()) sender.send('claude:event', { sessionId, envelope })
-
-      // 只有普通 Agent 请求会建立 Claude 会话和使用消息内容自动命名。
-      if (!desktopCommand && ev.type === 'done') {
-        const currentSession = listSessions().find((candidate) => candidate.id === sessionId)
-        if (currentSession && currentSession.title === '新对话') {
-          const title = prompt.slice(0, 30) + (prompt.length > 30 ? '…' : '')
-          updateSession(sessionId, { title, updatedAt: Date.now() })
-          if (!sender.isDestroyed()) sender.send('sessions:updated', { sessionId, title })
+      const run = async () => {
+        try {
+          if (desktopCommand?.kind === 'cli') {
+            await runReadonlyClaudeCommand(desktopCommand.args, projectPath, emitEvent, (abort) => {
+              task.abort = abort
+            })
+          } else if (desktopCommand?.kind === 'local') {
+            const skills = desktopCommand.name === 'skills' || desktopCommand.name === 'context' ? listInstalledSkills(projectPath) : []
+            emitEvent({ type: 'text_delta', delta: formatDesktopCommandResponse(desktopCommand, { locale: getAppLocale(), projectPath, session, skills, configPath: claudeUserSettingsPath() }) })
+            emitEvent({ type: 'done', sessionId: '' })
+          } else if (desktopCommand?.kind === 'blocked') {
+            emitEvent({ type: 'text_delta', delta: `## /${desktopCommand.name}\n\n${desktopCommand.reason}` })
+            emitEvent({ type: 'done', sessionId: '' })
+          } else {
+            task.runner = new ClaudeRunner()
+            task.abort = () => task.runner?.abort()
+            await task.runner.send({ prompt, model: session.model, claudeSessionId: session.claudeSessionId ?? undefined, permissionMode: session.permissionMode, cwd: projectPath }, emitEvent)
+          }
+        } catch (error) {
+          emitEvent({ type: 'error', message: String(error) })
+        } finally {
+          finishTask(task)
         }
       }
+      void run()
     }
 
-    if (desktopCommand?.kind === 'cli') {
-      await runReadonlyClaudeCommand(desktopCommand.args, projectPath, emitEvent)
-    } else if (desktopCommand?.kind === 'local') {
-      const skills = desktopCommand.name === 'skills' || desktopCommand.name === 'context'
-        ? listInstalledSkills(projectPath)
-        : []
-      emitEvent({
-        type: 'text_delta',
-        delta: formatDesktopCommandResponse(desktopCommand, {
-          locale: getAppLocale(),
-          projectPath,
-          session,
-          skills,
-          configPath: claudeUserSettingsPath(),
-        }),
-      })
-      emitEvent({ type: 'done', sessionId: '' })
-    } else if (desktopCommand?.kind === 'blocked') {
-      emitEvent({ type: 'text_delta', delta: `## /${desktopCommand.name}\n\n${desktopCommand.reason}` })
-      emitEvent({ type: 'done', sessionId: '' })
-    } else {
-      await runner.send(
-        {
-          prompt,
-          model: session.model,
-          claudeSessionId: session.claudeSessionId ?? undefined,
-          permissionMode: session.permissionMode,
-          cwd: projectPath,
-        },
-        emitEvent
-      )
-    }
+    const scheduled = scheduler.schedule({
+      id: taskId,
+      workspaceKey: task.workspaceKey,
+      access: accessForPermissionMode(session.permissionMode as PermissionMode),
+      start,
+      onQueuePositionChange: (queuePosition) => emitTaskStatus(task, 'queued', queuePosition),
+    })
+    if (scheduled.status === 'queued') emitTaskStatus(task, 'queued', scheduled.queuePosition)
   }
 )
 
 /** claude:abort → void */
-ipcMain.handle('claude:abort', () => {
-  runner.abort()
+ipcMain.handle('claude:abort', (_event, args: { sessionId?: string; turnId?: string } = {}) => {
+  const task = args.sessionId ? tasksBySession.get(args.sessionId) : undefined
+  if (!task || (args.turnId && task.turnId !== args.turnId)) return
+  if (cancelQueuedTask(task)) return
+  task.abort?.()
 })
 
 // ─── Appearance ──────────────────────────────────────────
@@ -448,6 +515,18 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// Queued work is deliberately non-resumable. Persist an interrupted terminal
+// entry before shutdown so reopening the session offers an explicit retry.
+app.on('before-quit', () => {
+  for (const task of [...tasksById.values()]) {
+    if (task.status === 'queued') {
+      cancelQueuedTask(task, false)
+    } else {
+      task.abort?.()
+    }
+  }
 })
 
 app.on('window-all-closed', () => {

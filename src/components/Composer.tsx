@@ -53,19 +53,6 @@ export function getComposerPlaceholder(
   return translate(locale, 'describeTaskPlaceholder')
 }
 
-export function getComposerTaskState(
-  isGenerating: boolean,
-  generatingSessionId: string | null,
-  activeSessionId: string | null
-): { isGeneratingCurrentSession: boolean; isTaskRunningElsewhere: boolean; showStopAction: boolean } {
-  const isGeneratingCurrentSession = isGenerating && generatingSessionId === activeSessionId
-  return {
-    isGeneratingCurrentSession,
-    isTaskRunningElsewhere: isGenerating && !isGeneratingCurrentSession,
-    showStopAction: isGeneratingCurrentSession,
-  }
-}
-
 /** 根据光标所在词识别 @ 文件引用或行首 /Skill 引用。 */
 export function getComposerCompletion(value: string, cursor: number): ComposerCompletion | null {
   const beforeCursor = value.slice(0, Math.max(0, Math.min(cursor, value.length)))
@@ -141,8 +128,8 @@ export default function Composer({ value, onChange, focusToken }: Props) {
   const historyIndexRef = useRef(-1)
   /** 按 ↑ 进入历史前的草稿，供 ↓ 越界返回 */
   const draftRef = useRef('')
-  const isGenerating = useAppStore((s) => s.isGenerating)
-  const generatingSessionId = useAppStore((s) => s.generatingSessionId)
+  const taskState = useAppStore((s) => s.taskStates[s.activeSessionId ?? ''])
+  const isGenerating = taskState?.status === 'running'
   const sendMessage = useAppStore((s) => s.sendMessage)
   const abortGeneration = useAppStore((s) => s.abortGeneration)
   const skills = useAppStore((s) => s.skills)
@@ -158,21 +145,22 @@ export default function Composer({ value, onChange, focusToken }: Props) {
   const [activeOptionIndex, setActiveOptionIndex] = useState(0)
   const hasProjectContext = Boolean(activeSession?.projectPath)
   const canUseCli = cliAvailable === true
-  const { isGeneratingCurrentSession, isTaskRunningElsewhere, showStopAction } = getComposerTaskState(
-    isGenerating,
-    generatingSessionId,
-    activeSessionId
-  )
+  const isGeneratingCurrentSession = taskState?.status === 'running'
+  const isQueuedCurrentSession = taskState?.status === 'queued'
+  const isTaskRunningElsewhere = false
+  const showStopAction = isGeneratingCurrentSession || isQueuedCurrentSession
   const composerState = getComposerState(value, isGeneratingCurrentSession, Boolean(activeSessionId), hasProjectContext, canUseCli)
-  const placeholder = getComposerPlaceholder(
-    isGeneratingCurrentSession,
-    Boolean(activeSessionId),
-    hasProjectContext,
-    canUseCli,
-    locale,
-    isTaskRunningElsewhere
-  )
-  const canSend = composerState === 'is-ready' && !isTaskRunningElsewhere
+  const placeholder = isQueuedCurrentSession
+    ? t('queuedTaskPlaceholder')
+    : getComposerPlaceholder(
+      isGeneratingCurrentSession,
+      Boolean(activeSessionId),
+      hasProjectContext,
+      canUseCli,
+      locale,
+      isTaskRunningElsewhere
+    )
+  const canSend = composerState === 'is-ready' && !isTaskRunningElsewhere && !isQueuedCurrentSession
 
   const resizeTextarea = () => {
     const textarea = textareaRef.current
@@ -245,7 +233,7 @@ export default function Composer({ value, onChange, focusToken }: Props) {
 
   const handleSend = () => {
     const trimmed = value.trim()
-    if (!trimmed || isGenerating || !activeSessionId || !hasProjectContext || !canUseCli) return
+    if (!trimmed || isGenerating || isQueuedCurrentSession || !activeSessionId || !hasProjectContext || !canUseCli) return
     sendMessage(trimmed)
     historyRef.current = [trimmed, ...historyRef.current.filter((item) => item !== trimmed)].slice(0, 50)
     historyIndexRef.current = -1
@@ -347,7 +335,7 @@ export default function Composer({ value, onChange, focusToken }: Props) {
           onFocus={(event) => updateCompletion(event.currentTarget.value, event.currentTarget.selectionStart)}
           onBlur={() => setCompletion(null)}
           placeholder={placeholder}
-          disabled={isGenerating || !activeSessionId || !hasProjectContext || !canUseCli}
+          disabled={isGenerating || isQueuedCurrentSession || !activeSessionId || !hasProjectContext || !canUseCli}
           rows={1}
           aria-label={t('messageInput')}
           aria-autocomplete="list"

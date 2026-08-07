@@ -92,8 +92,8 @@ export class ClaudeRunner implements AgentTransport {
 
     return new Promise<void>((resolve) => {
       const emitEvent = (event: AgentEvent) => {
+        if (terminalEventSent) return
         if (event.type === 'done' || event.type === 'aborted' || event.type === 'error') {
-          if (terminalEventSent) return
           terminalEventSent = true
         }
         onEvent(event)
@@ -165,6 +165,10 @@ export class ClaudeRunner implements AgentTransport {
         } else if (code !== 0) {
           // 进程非正常退出但 stream-json 未报错（如启动即失败）
           emitEvent({ type: 'error', message: stderr || `claude 进程异常退出（code ${code}）` })
+        } else if (!terminalEventSent) {
+          // A successful process close is still terminal even when the CLI did
+          // not flush a result event. This lets the scheduler release safely.
+          emitEvent({ type: 'done', sessionId: sessionIdFromInit ?? '' })
         }
         resolve()
       })

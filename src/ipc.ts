@@ -22,7 +22,8 @@ export const ipc = {
   saveClaudeUserModelConfig: (...args: Parameters<ElectronAPI['saveClaudeUserModelConfig']>) =>
     api().saveClaudeUserModelConfig(...args),
   sendMessage: (...args: Parameters<ElectronAPI['sendMessage']>) => api().sendMessage(...args),
-  abortGeneration: () => api().abortGeneration(),
+  abortGeneration: (...args: Parameters<ElectronAPI['abortGeneration']>) => api().abortGeneration(...args),
+  onTaskStatus: (...args: Parameters<ElectronAPI['onTaskStatus']>) => api().onTaskStatus(...args),
   onClaudeEvent: (...args: Parameters<ElectronAPI['onClaudeEvent']>) => api().onClaudeEvent(...args),
   onSessionUpdated: (...args: Parameters<ElectronAPI['onSessionUpdated']>) => api().onSessionUpdated(...args),
   listSessions: () => api().listSessions(),

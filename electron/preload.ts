@@ -18,6 +18,7 @@ import type {
   LocaleUpdateResult,
   Session,
   SessionData,
+  SessionTaskStatusUpdate,
   WorkspaceFile,
 } from './store/types'
 import type { AgentEventEnvelope } from './cli/agentTransport'
@@ -37,7 +38,13 @@ const api = {
     createdAt: number
   }): Promise<void> => ipcRenderer.invoke('claude:send', args),
 
-  abortGeneration: (): Promise<void> => ipcRenderer.invoke('claude:abort'),
+  abortGeneration: (args: { sessionId: string; turnId: string }): Promise<void> => ipcRenderer.invoke('claude:abort', args),
+
+  onTaskStatus: (handler: (status: SessionTaskStatusUpdate) => void): (() => void) => {
+    const listener = (_: Electron.IpcRendererEvent, status: SessionTaskStatusUpdate) => handler(status)
+    ipcRenderer.on('claude:task-status', listener)
+    return () => ipcRenderer.off('claude:task-status', listener)
+  },
 
   // ─── Appearance ─────────────────────────────────────────
   getAppearance: (): Promise<AppearanceState> => ipcRenderer.invoke('appearance:get'),

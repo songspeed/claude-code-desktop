@@ -97,6 +97,7 @@ describe('useRoundEndNotifications', () => {
         projectPath: '/tmp/project', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0,
       }],
       messages: { 'session-1': [] },
+      taskStates: {},
       transcripts: {
         'session-1': {
           version: 2,
@@ -114,10 +115,14 @@ describe('useRoundEndNotifications', () => {
     act(() => useAppStore.setState({ activeSessionId: 'session-1' }))
     expect(NotificationMock.count).toBe(0)
 
-    // 回合结束：isGenerating true → false 触发一条完成通知
-    act(() => useAppStore.setState({ isGenerating: true, generatingSessionId: 'session-1' }))
+    // A terminal transition for this session's task triggers one completion notification.
+    act(() => useAppStore.setState({ taskStates: {
+      'session-1': { sessionId: 'session-1', turnId: 'turn-1', status: 'running', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+    } }))
     expect(NotificationMock.count).toBe(0)
-    act(() => useAppStore.setState({ isGenerating: false, generatingSessionId: null }))
+    act(() => useAppStore.setState({ taskStates: {
+      'session-1': { sessionId: 'session-1', turnId: 'turn-1', status: 'completed', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+    } }))
     expect(NotificationMock.count).toBe(1)
     expect(NotificationMock.lastTitle).toBe('重构登录')
     expect(NotificationMock.lastBody).toContain('生成完成')
@@ -132,6 +137,7 @@ describe('useRoundEndNotifications', () => {
         projectPath: '/tmp/project', model: 'sonnet', permissionMode: 'acceptEdits', createdAt: 0, updatedAt: 0,
       }],
       messages: { 'session-1': [] },
+      taskStates: {},
       transcripts: {
         'session-1': {
           version: 2,
@@ -143,8 +149,12 @@ describe('useRoundEndNotifications', () => {
     })
 
     act(() => renderProbe())
-    act(() => useAppStore.setState({ isGenerating: true, generatingSessionId: 'session-1' }))
-    act(() => useAppStore.setState({ isGenerating: false, generatingSessionId: null }))
+    act(() => useAppStore.setState({ taskStates: {
+      'session-1': { sessionId: 'session-1', turnId: 'turn-1', status: 'running', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+    } }))
+    act(() => useAppStore.setState({ taskStates: {
+      'session-1': { sessionId: 'session-1', turnId: 'turn-1', status: 'interrupted', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+    } }))
     expect(NotificationMock.count).toBe(1)
     expect(NotificationMock.lastBody).toContain('已中断')
 
@@ -160,8 +170,12 @@ describe('useRoundEndNotifications', () => {
         },
       },
     })))
-    act(() => useAppStore.setState({ isGenerating: true, generatingSessionId: 'session-1' }))
-    act(() => useAppStore.setState({ isGenerating: false, generatingSessionId: null }))
+    act(() => useAppStore.setState({ taskStates: {
+      'session-1': { sessionId: 'session-1', turnId: 'turn-2', status: 'running', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+    } }))
+    act(() => useAppStore.setState({ taskStates: {
+      'session-1': { sessionId: 'session-1', turnId: 'turn-2', status: 'error', unreadOutputCount: 0, streamingText: '', streamingThinking: '', streamingThinkingTokens: null, streamingPhase: null, liveStatus: null },
+    } }))
     expect(NotificationMock.count).toBe(2)
     expect(NotificationMock.lastBody).toContain('失败')
   })
