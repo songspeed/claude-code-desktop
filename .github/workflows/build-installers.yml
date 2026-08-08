@@ -21,9 +21,6 @@ jobs:
           - name: linux-x64
             os: ubuntu-latest
             args: --linux --x64
-          - name: mac-x64
-            os: macos-13
-            args: --mac --x64
           - name: mac-arm64
             os: macos-14
             args: --mac --arm64
