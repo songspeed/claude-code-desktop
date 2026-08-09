@@ -10,17 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  cleanup:
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Remove stale release for this tag
-        run: gh release delete "${{ github.ref_name }}" --yes --cleanup-tag=false || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   build:
-    needs: cleanup
     strategy:
       fail-fast: false
       matrix:
@@ -63,9 +53,7 @@ jobs:
         run: npm run build
 
       - name: Package installer
-        run: npx electron-builder ${{ matrix.args }} --publish onTagOrDraft
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder ${{ matrix.args }} --publish never
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -80,3 +68,29 @@ jobs:
             dist/*.blockmap
             dist/*.yml
           if-no-files-found: warn
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Remove stale release (rebuild clean)
+        run: gh release delete "${{ github.ref_name }}" --yes --cleanup-tag=false || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create (or reuse) release
+        run: gh release create "${{ github.ref_name }}" --notes "${{ github.ref_name }}" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload assets (overwrite existing)
+        run: gh release upload "${{ github.ref_name }}" artifacts/* --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
